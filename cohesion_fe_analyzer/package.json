@@ -1,0 +1,21 @@
+{
+  "name": "cohesion_fe_analyzer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@types/node": "^25.0.9",
+    "commander": "^14.0.2",
+    "ts-morph": "^27.0.2",
+    "typescript": "^5.9.3"
+  }
+}
