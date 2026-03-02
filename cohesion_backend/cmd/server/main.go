@@ -16,6 +16,7 @@ import (
 	"github.com/cohesion-api/cohesion_backend/internal/services"
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer"
 	geminianalyzer "github.com/cohesion-api/cohesion_backend/pkg/analyzer/gemini"
+	ghpkg "github.com/cohesion-api/cohesion_backend/pkg/github"
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	schemaRepo := repository.NewSchemaRepository(db)
 	diffRepo := repository.NewDiffRepository(db)
 	userSettingsRepo := repository.NewUserSettingsRepository(db)
+	ghInstallRepo := repository.NewGitHubInstallationRepository(db)
 
 	projectService := services.NewProjectService(projectRepo, endpointRepo)
 	endpointService := services.NewEndpointService(endpointRepo, schemaRepo)
@@ -46,19 +48,26 @@ func main() {
 	diffService := services.NewDiffService(diffRepo, schemaRepo, endpointRepo)
 	liveService := services.NewLiveService()
 	userSettingsService := services.NewUserSettingsService(userSettingsRepo)
+	ghInstallService := services.NewGitHubInstallationService(ghInstallRepo)
 	var codeAnalyzer analyzer.Analyzer
 	if cfg.GeminiAPIKey != "" {
 		codeAnalyzer = geminianalyzer.New(cfg.GeminiAPIKey, cfg.GeminiModel)
 	}
 
+	ghAppAuth := ghpkg.NewAppAuth(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
+
 	svc := &controlplane.Services{
-		ProjectService:      projectService,
-		EndpointService:     endpointService,
-		SchemaService:       schemaService,
-		DiffService:         diffService,
-		LiveService:         liveService,
-		UserSettingsService: userSettingsService,
-		Analyzer:            codeAnalyzer,
+		ProjectService:            projectService,
+		EndpointService:           endpointService,
+		SchemaService:             schemaService,
+		DiffService:               diffService,
+		LiveService:               liveService,
+		UserSettingsService:       userSettingsService,
+		GitHubInstallationService: ghInstallService,
+		Analyzer:                  codeAnalyzer,
+		GitHubAppAuth:             ghAppAuth,
+		GitHubAppSlug:             cfg.GitHubAppSlug,
+		FrontendURL:               cfg.FrontendURL,
 	}
 
 	router := controlplane.NewRouter(svc)

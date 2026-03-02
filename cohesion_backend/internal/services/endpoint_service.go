@@ -40,23 +40,13 @@ func (s *EndpointService) ListByProject(ctx context.Context, projectID uuid.UUID
 }
 
 func (s *EndpointService) GetOrCreate(ctx context.Context, projectID uuid.UUID, path, method string) (*models.Endpoint, error) {
-	existing, err := s.endpointRepo.GetByPathAndMethod(ctx, projectID, path, method)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return existing, nil
-	}
-
 	endpoint := &models.Endpoint{
 		ProjectID: projectID,
 		Path:      path,
 		Method:    method,
 	}
-
 	if err := s.endpointRepo.Upsert(ctx, endpoint); err != nil {
 		return nil, err
 	}
-
 	return endpoint, nil
 }

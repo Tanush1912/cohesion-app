@@ -12,13 +12,14 @@ import {
 } from "@xyflow/react";
 import { ObjectSchema, SchemaSource, Mismatch } from "@/lib/types";
 
-type FieldStatus = "match" | "mismatch" | "warning" | "missing";
+type FieldStatus = "match" | "mismatch" | "warning" | "missing" | "info";
 
 const STATUS_COLORS: Record<FieldStatus, string> = {
     match: "var(--success)",
     mismatch: "var(--error)",
     warning: "var(--warning)",
     missing: "var(--error)",
+    info: "oklch(0.65 0.15 250)",
 };
 
 const FLOW_EDGE_STYLES: Record<FieldStatus, { stroke: string; strokeWidth: number }> = {
@@ -26,6 +27,7 @@ const FLOW_EDGE_STYLES: Record<FieldStatus, { stroke: string; strokeWidth: numbe
     mismatch: { stroke: "oklch(0.65 0.24 25 / 70%)", strokeWidth: 2.5 },
     warning: { stroke: "oklch(0.78 0.16 75 / 70%)", strokeWidth: 2.5 },
     missing: { stroke: "oklch(0.65 0.24 25 / 70%)", strokeWidth: 2.5 },
+    info: { stroke: "oklch(0.65 0.15 250 / 45%)", strokeWidth: 1.8 },
 };
 
 const METHOD_COLORS: Record<string, string> = {
@@ -42,9 +44,13 @@ function getFlowFieldStatus(
 ): FieldStatus {
     const hits = mismatches.filter((m) => m.path.includes(fieldName));
     if (hits.length === 0) return "match";
-    if (hits.some((m) => m.type === "type_mismatch" || m.type === "missing"))
+
+    if (hits.some((m) => (m.type === "type_mismatch" || m.type === "missing") && m.severity === "critical"))
         return "mismatch";
-    if (hits.some((m) => m.type === "optionality_mismatch")) return "warning";
+    if (hits.some((m) => m.type === "optionality_mismatch" || m.severity === "warning"))
+        return "warning";
+    if (hits.some((m) => m.severity === "info"))
+        return "info";
     return "mismatch";
 }
 

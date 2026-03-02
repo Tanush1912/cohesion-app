@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cohesion-api/cohesion_backend/internal/crypto"
 	"github.com/cohesion-api/cohesion_backend/internal/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,7 +28,18 @@ func (r *UserSettingsRepository) GetByClerkUserID(ctx context.Context, clerkUser
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
-	return &s, err
+	if err != nil {
+		return nil, err
+	}
+
+	if decrypted, err := crypto.Decrypt(s.GeminiAPIKey); err == nil {
+		s.GeminiAPIKey = decrypted
+	}
+	if decrypted, err := crypto.Decrypt(s.GitHubToken); err == nil {
+		s.GitHubToken = decrypted
+	}
+
+	return &s, nil
 }
 
 func (r *UserSettingsRepository) Upsert(ctx context.Context, settings *models.UserSettings) error {
@@ -39,7 +51,16 @@ func (r *UserSettingsRepository) Upsert(ctx context.Context, settings *models.Us
 		settings.CreatedAt = now
 	}
 
-	_, err := r.db.Pool.Exec(ctx, `
+	encGemini, err := crypto.Encrypt(settings.GeminiAPIKey)
+	if err != nil {
+		return err
+	}
+	encGitHub, err := crypto.Encrypt(settings.GitHubToken)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.Pool.Exec(ctx, `
 		INSERT INTO user_settings (id, clerk_user_id, gemini_api_key, gemini_model, github_token, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (clerk_user_id) DO UPDATE SET
@@ -47,7 +68,7 @@ func (r *UserSettingsRepository) Upsert(ctx context.Context, settings *models.Us
 			gemini_model = EXCLUDED.gemini_model,
 			github_token = EXCLUDED.github_token,
 			updated_at = EXCLUDED.updated_at
-	`, settings.ID, settings.ClerkUserID, settings.GeminiAPIKey, settings.GeminiModel, settings.GitHubToken, settings.CreatedAt, settings.UpdatedAt)
+	`, settings.ID, settings.ClerkUserID, encGemini, settings.GeminiModel, encGitHub, settings.CreatedAt, settings.UpdatedAt)
 
 	return err
 }

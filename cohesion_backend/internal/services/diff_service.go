@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 
 	"github.com/cohesion-api/cohesion_backend/internal/models"
 	"github.com/cohesion-api/cohesion_backend/internal/repository"
@@ -27,7 +29,7 @@ func NewDiffService(diffRepo *repository.DiffRepository, schemaRepo *repository.
 	}
 }
 
-func schemasToIR(schemas []models.Schema) []schemair.SchemaIR {
+func schemasToIR(schemas []models.Schema) ([]schemair.SchemaIR, []string) {
 	seen := make(map[string]bool)
 	var deduped []models.Schema
 	for _, schema := range schemas {
@@ -38,14 +40,19 @@ func schemasToIR(schemas []models.Schema) []schemair.SchemaIR {
 		deduped = append(deduped, schema)
 	}
 
+	var warnings []string
 	result := make([]schemair.SchemaIR, 0, len(deduped))
 	for _, schema := range deduped {
 		var ir schemair.SchemaIR
 		data, err := json.Marshal(schema.SchemaData)
 		if err != nil {
+			log.Printf("WARNING: failed to marshal schema %s (source=%s): %v", schema.ID, schema.Source, err)
+			warnings = append(warnings, fmt.Sprintf("Skipped corrupt schema from %s", schema.Source))
 			continue
 		}
 		if err := json.Unmarshal(data, &ir); err != nil {
+			log.Printf("WARNING: failed to unmarshal schema %s (source=%s): %v", schema.ID, schema.Source, err)
+			warnings = append(warnings, fmt.Sprintf("Skipped unparseable schema from %s", schema.Source))
 			continue
 		}
 		if ir.Source == "" {
@@ -53,7 +60,7 @@ func schemasToIR(schemas []models.Schema) []schemair.SchemaIR {
 		}
 		result = append(result, ir)
 	}
-	return result
+	return result, warnings
 }
 
 func (s *DiffService) ComputeDiff(ctx context.Context, endpointID uuid.UUID) (*diff.Result, error) {
@@ -67,34 +74,28 @@ func (s *DiffService) ComputeDiff(ctx context.Context, endpointID uuid.UUID) (*d
 		return nil, err
 	}
 
-	if len(schemas) < 2 {
-		return &diff.Result{
-			Endpoint:   endpoint.Path,
-			Method:     endpoint.Method,
-			Status:     schemair.StatusMatch,
-			Mismatches: []diff.Mismatch{},
-		}, nil
-	}
-
-	schemaIRs := schemasToIR(schemas)
+	// Always go through the engine so we get a proper Confidence object
+	schemaIRs, _ := schemasToIR(schemas)
 	result := s.diffEngine.Compare(endpoint.Path, endpoint.Method, schemaIRs)
 
-	diffData := map[string]interface{}{
-		"endpoint":         result.Endpoint,
-		"method":           result.Method,
-		"status":           result.Status,
-		"mismatches":       result.Mismatches,
-		"sources_compared": result.SourcesCompared,
-	}
+	if len(schemaIRs) >= 2 {
+		diffData := map[string]interface{}{
+			"endpoint":         result.Endpoint,
+			"method":           result.Method,
+			"status":           result.Status,
+			"mismatches":       result.Mismatches,
+			"sources_compared": result.SourcesCompared,
+		}
 
-	diffModel := &models.Diff{
-		EndpointID:      endpointID,
-		DiffData:        diffData,
-		SourcesCompared: formatSources(result.SourcesCompared),
-	}
+		diffModel := &models.Diff{
+			EndpointID:      endpointID,
+			DiffData:        diffData,
+			SourcesCompared: formatSources(result.SourcesCompared),
+		}
 
-	if err := s.diffRepo.Create(ctx, diffModel); err != nil {
-		return nil, err
+		if err := s.diffRepo.Create(ctx, diffModel); err != nil {
+			return nil, err
+		}
 	}
 
 	return result, nil
@@ -109,35 +110,37 @@ type DiffStats struct {
 func (s *DiffService) ComputeStats(ctx context.Context, projectIDs []uuid.UUID) (*DiffStats, error) {
 	stats := &DiffStats{}
 
-	for _, projectID := range projectIDs {
-		endpoints, err := s.endpointRepo.GetByProjectWithSchemas(ctx, projectID)
-		if err != nil {
-			return nil, err
+	if len(projectIDs) == 0 {
+		return stats, nil
+	}
+
+	endpoints, err := s.endpointRepo.GetByProjectIDsWithSchemas(ctx, projectIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, endpoint := range endpoints {
+		sources := make(map[string]bool)
+		for _, schema := range endpoint.Schemas {
+			sources[schema.Source] = true
+		}
+		if len(sources) < 2 {
+			continue
 		}
 
-		for _, endpoint := range endpoints {
-			sources := make(map[string]bool)
-			for _, schema := range endpoint.Schemas {
-				sources[schema.Source] = true
-			}
-			if len(sources) < 2 {
-				continue
-			}
+		schemaIRs, _ := schemasToIR(endpoint.Schemas)
+		if len(schemaIRs) < 2 {
+			continue
+		}
 
-			schemaIRs := schemasToIR(endpoint.Schemas)
-			if len(schemaIRs) < 2 {
-				continue
-			}
-
-			result := s.diffEngine.Compare(endpoint.Path, endpoint.Method, schemaIRs)
-			switch result.Status {
-			case schemair.StatusMatch:
-				stats.Matched++
-			case schemair.StatusPartial:
-				stats.Partial++
-			case schemair.StatusViolation:
-				stats.Violations++
-			}
+		result := s.diffEngine.Compare(endpoint.Path, endpoint.Method, schemaIRs)
+		switch result.Status {
+		case schemair.StatusMatch:
+			stats.Matched++
+		case schemair.StatusPartial:
+			stats.Partial++
+		case schemair.StatusViolation:
+			stats.Violations++
 		}
 	}
 	return stats, nil

@@ -7,61 +7,13 @@ import (
 	"strings"
 
 	ignore "github.com/sabhiram/go-gitignore"
+
+	"github.com/cohesion-api/cohesion_backend/pkg/sourcefile"
 )
 
 type SourceFile struct {
 	Path    string
 	Content string
-}
-
-var skipDirs = map[string]bool{
-	"vendor":       true,
-	".git":         true,
-	"node_modules": true,
-	"__pycache__":  true,
-	".venv":        true,
-	"venv":         true,
-	"dist":         true,
-	"build":        true,
-	"target":       true,
-	".idea":        true,
-	".vscode":      true,
-	".next":        true,
-	".nuxt":        true,
-}
-
-var sourceExtensions = map[string]bool{
-	".go":    true,
-	".py":    true,
-	".ts":    true,
-	".js":    true,
-	".java":  true,
-	".rb":    true,
-	".rs":    true,
-	".php":   true,
-	".cs":    true,
-	".kt":    true,
-	".ex":    true,
-	".exs":   true,
-	".scala": true,
-	".swift": true,
-}
-
-var languageHints = map[string]string{
-	".go":    "Go",
-	".py":    "Python",
-	".ts":    "TypeScript",
-	".js":    "JavaScript",
-	".java":  "Java",
-	".rb":    "Ruby",
-	".rs":    "Rust",
-	".php":   "PHP",
-	".cs":    "C#",
-	".kt":    "Kotlin",
-	".ex":    "Elixir",
-	".exs":   "Elixir",
-	".scala": "Scala",
-	".swift": "Swift",
 }
 
 const maxTokenBudget = 900_000
@@ -92,20 +44,6 @@ func filePriority(name string) int {
 	}
 
 	return 4
-}
-
-func isTestFile(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, "_test.go") ||
-		strings.HasPrefix(lower, "test_") ||
-		strings.HasSuffix(lower, "_test.py") ||
-		strings.HasSuffix(lower, ".test.ts") ||
-		strings.HasSuffix(lower, ".test.js") ||
-		strings.HasSuffix(lower, ".spec.ts") ||
-		strings.HasSuffix(lower, ".spec.js") ||
-		strings.Contains(lower, "/test/") ||
-		strings.Contains(lower, "/tests/") ||
-		strings.Contains(lower, "/__tests__/")
 }
 
 type fileEntry struct {
@@ -167,7 +105,7 @@ func loadGitIgnoreMatcher(rootPath string) *ignore.GitIgnore {
 		}
 
 		if info.IsDir() {
-			if skipDirs[info.Name()] {
+			if sourcefile.SkipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -206,7 +144,7 @@ func DetectLanguage(files []SourceFile) string {
 	extCount := make(map[string]int)
 	for _, f := range files {
 		ext := strings.ToLower(filepath.Ext(f.Path))
-		if languageHints[ext] != "" {
+		if sourcefile.LanguageHints[ext] != "" {
 			extCount[ext]++
 		}
 	}
@@ -216,7 +154,7 @@ func DetectLanguage(files []SourceFile) string {
 	for ext, count := range extCount {
 		if count > maxCount {
 			maxCount = count
-			language = languageHints[ext]
+			language = sourcefile.LanguageHints[ext]
 		}
 	}
 	return language
@@ -239,7 +177,7 @@ func DiscoverFiles(rootPath string) ([]SourceFile, string) {
 		relPath = filepath.ToSlash(relPath)
 
 		if info.IsDir() {
-			if skipDirs[info.Name()] {
+			if sourcefile.SkipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 			if relPath != "." && gitIgnoreMatcher != nil && gitIgnoreMatcher.MatchesPath(relPath+"/") {
@@ -253,11 +191,11 @@ func DiscoverFiles(rootPath string) ([]SourceFile, string) {
 		}
 
 		ext := strings.ToLower(filepath.Ext(info.Name()))
-		if !sourceExtensions[ext] {
+		if !sourcefile.SourceExtensions[ext] {
 			return nil
 		}
 
-		if isTestFile(relPath) {
+		if sourcefile.IsTestFile(relPath) {
 			return nil
 		}
 
@@ -305,7 +243,7 @@ func DiscoverFiles(rootPath string) ([]SourceFile, string) {
 	for ext, count := range extCount {
 		if count > maxCount {
 			maxCount = count
-			language = languageHints[ext]
+			language = sourcefile.LanguageHints[ext]
 		}
 	}
 

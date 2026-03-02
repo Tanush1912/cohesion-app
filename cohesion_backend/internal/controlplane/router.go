@@ -7,19 +7,24 @@ import (
 	"github.com/cohesion-api/cohesion_backend/internal/controlplane/handlers"
 	"github.com/cohesion-api/cohesion_backend/internal/services"
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer"
+	ghpkg "github.com/cohesion-api/cohesion_backend/pkg/github"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 )
 
 type Services struct {
-	ProjectService      *services.ProjectService
-	EndpointService     *services.EndpointService
-	SchemaService       *services.SchemaService
-	DiffService         *services.DiffService
-	LiveService         *services.LiveService
-	UserSettingsService *services.UserSettingsService
-	Analyzer            analyzer.Analyzer
+	ProjectService            *services.ProjectService
+	EndpointService           *services.EndpointService
+	SchemaService             *services.SchemaService
+	DiffService               *services.DiffService
+	LiveService               *services.LiveService
+	UserSettingsService       *services.UserSettingsService
+	GitHubInstallationService *services.GitHubInstallationService
+	Analyzer                  analyzer.Analyzer
+	GitHubAppAuth             *ghpkg.AppAuth
+	GitHubAppSlug             string
+	FrontendURL               string
 }
 
 func NewRouter(svc *Services) http.Handler {
@@ -37,17 +42,20 @@ func NewRouter(svc *Services) http.Handler {
 		MaxAge:           300,
 	}))
 
-	r.Use(svc.LiveService.SelfCaptureMiddleware())
-
 	h := handlers.New(
 		svc.ProjectService, svc.EndpointService, svc.SchemaService,
-		svc.DiffService, svc.LiveService, svc.UserSettingsService, svc.Analyzer,
+		svc.DiffService, svc.LiveService, svc.UserSettingsService,
+		svc.GitHubInstallationService, svc.Analyzer,
+		svc.GitHubAppAuth, svc.GitHubAppSlug,
 	)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware())
+			r.Use(svc.LiveService.SelfCaptureMiddleware(func(r *http.Request) string {
+				return auth.UserID(r.Context())
+			}))
 
 			r.Route("/projects", func(r chi.Router) {
 				r.Post("/", h.CreateProject)
@@ -69,12 +77,19 @@ func NewRouter(svc *Services) http.Handler {
 				r.Get("/{endpointID}", h.GetEndpoint)
 			})
 
-			r.Get("/diff/{endpointID}", h.ComputeDiff)
+			r.Post("/diff/{endpointID}", h.ComputeDiff)
 			r.Get("/stats", h.GetStats)
 
 			r.Route("/user", func(r chi.Router) {
 				r.Get("/settings", h.GetUserSettings)
 				r.Put("/settings", h.SaveUserSettings)
+			})
+
+			r.Route("/github", func(r chi.Router) {
+				r.Get("/status", h.GitHubAppStatus)
+				r.Post("/installations", h.SaveGitHubInstallation)
+				r.Get("/installations", h.ListGitHubInstallations)
+				r.Delete("/installations/{installationID}", h.RemoveGitHubInstallation)
 			})
 
 			r.Route("/live", func(r chi.Router) {
@@ -86,6 +101,7 @@ func NewRouter(svc *Services) http.Handler {
 				r.Post("/capture/start", h.StartCapture)
 				r.Post("/capture/stop", h.StopCapture)
 				r.Post("/diff", h.LiveDiff)
+				r.Get("/schemas", h.GetLiveSchemas)
 				r.Get("/sources", h.GetLiveSources)
 				r.Post("/proxy/configure", h.ConfigureProxy)
 				r.HandleFunc("/proxy/{projectID}/{label}/*", h.ProxyHandler)

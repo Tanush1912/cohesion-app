@@ -2,6 +2,7 @@ package diff
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -15,11 +16,32 @@ func NewEngine() *Engine {
 }
 
 var typeCompatGroups = [][]string{
-	{"int", "integer", "number", "float"},
+	{"int", "integer"},
+	{"float", "double"},
 	{"bool", "boolean"},
 	{"string", "str"},
 	{"object", "map"},
 	{"array", "list"},
+}
+
+var typeSubtypes = map[string]string{
+	"uuid":      "string",
+	"date":      "string",
+	"datetime":  "string",
+	"date-time": "string",
+	"uri":       "string",
+	"email":     "string",
+	"time":      "string",
+	"timestamp": "string",
+
+	"int":     "number",
+	"integer": "number",
+	"int32":   "int",
+	"int64":   "int",
+	"float":   "number",
+	"float64": "float",
+	"float32": "float",
+	"double":  "number",
 }
 
 var typeCanonical map[string]string
@@ -42,6 +64,43 @@ func canonicalType(t string) string {
 	return lower
 }
 
+func wireType(t string) string {
+	lower := strings.ToLower(strings.TrimSpace(t))
+	if parent, ok := typeSubtypes[lower]; ok {
+		return wireType(parent)
+	}
+	return canonicalType(lower)
+}
+
+func numericGroup(t string) string {
+	lower := strings.ToLower(strings.TrimSpace(t))
+	if canon, ok := typeCanonical[lower]; ok {
+		if canon == "int" || canon == "float" {
+			return canon
+		}
+	}
+	if parent, ok := typeSubtypes[lower]; ok {
+		return numericGroup(parent)
+	}
+	return ""
+}
+
+func areSubtypeCompatible(typeA, typeB string) bool {
+	a := strings.ToLower(strings.TrimSpace(typeA))
+	b := strings.ToLower(strings.TrimSpace(typeB))
+	groupA, groupB := numericGroup(a), numericGroup(b)
+	if groupA != "" && groupB != "" && groupA != groupB {
+		return false
+	}
+
+	_, aIsSub := typeSubtypes[a]
+	_, bIsSub := typeSubtypes[b]
+	if !aIsSub && !bIsSub {
+		return false
+	}
+	return wireType(a) == wireType(b)
+}
+
 func normalizeFieldName(name string) string {
 	name = strings.ReplaceAll(name, "-", "_")
 
@@ -59,6 +118,15 @@ func normalizeFieldName(name string) string {
 		result = append(result, unicode.ToLower(r))
 	}
 	return string(result)
+}
+
+func sortedSources(m map[schemair.SchemaSource]fieldInfo) []schemair.SchemaSource {
+	keys := make([]schemair.SchemaSource, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
+	return keys
 }
 
 func (e *Engine) Compare(endpoint, method string, schemas []schemair.SchemaIR) *Result {
@@ -126,10 +194,14 @@ type fieldInfo struct {
 func collectFields(obj *schemair.ObjectSchema, prefix string, source schemair.SchemaSource,
 	fieldPresence map[string]map[schemair.SchemaSource]fieldInfo,
 ) {
-	if obj == nil || obj.Fields == nil {
+	if obj == nil {
 		return
 	}
+
 	for fieldName, field := range obj.Fields {
+		if field == nil {
+			continue
+		}
 		normalName := normalizeFieldName(fieldName)
 		path := prefix + normalName
 
@@ -155,19 +227,19 @@ func collectFields(obj *schemair.ObjectSchema, prefix string, source schemair.Sc
 func (e *Engine) compareRequests(schemas []schemair.SchemaIR) []Mismatch {
 	fieldPresence := make(map[string]map[schemair.SchemaSource]fieldInfo)
 
-	sourcesWithRequest := 0
+	var contributingSources []schemair.SchemaSource
 	for _, schema := range schemas {
-		if schema.Request != nil && schema.Request.Fields != nil {
-			sourcesWithRequest++
+		if schema.Request != nil && (schema.Request.Fields != nil || schema.Request.Items != nil) {
+			contributingSources = append(contributingSources, schema.Source)
 			collectFields(schema.Request, "request.", schema.Source, fieldPresence)
 		}
 	}
 
-	if sourcesWithRequest < 2 {
+	if len(contributingSources) < 2 {
 		return nil
 	}
 
-	return e.detectMismatches(fieldPresence, schemas, "request")
+	return e.detectMismatches(fieldPresence, contributingSources, "request")
 }
 
 func (e *Engine) compareResponses(schemas []schemair.SchemaIR) []Mismatch {
@@ -186,7 +258,7 @@ func (e *Engine) compareResponses(schemas []schemair.SchemaIR) []Mismatch {
 	for code := range statusCodes {
 		fieldPresence := make(map[string]map[schemair.SchemaSource]fieldInfo)
 
-		sourcesWithCode := 0
+		var contributingSources []schemair.SchemaSource
 		for _, schema := range schemas {
 			if schema.Response == nil {
 				continue
@@ -195,38 +267,42 @@ func (e *Engine) compareResponses(schemas []schemair.SchemaIR) []Mismatch {
 			if !ok || resp == nil {
 				continue
 			}
-			sourcesWithCode++
+			contributingSources = append(contributingSources, schema.Source)
 			prefix := fmt.Sprintf("response.%d.", code)
 			collectFields(resp, prefix, schema.Source, fieldPresence)
 		}
 
-		if sourcesWithCode < 2 {
+		if len(contributingSources) < 2 {
 			continue
 		}
 
-		mismatches = append(mismatches, e.detectMismatches(fieldPresence, schemas, "response")...)
+		mismatches = append(mismatches, e.detectMismatches(fieldPresence, contributingSources, "response")...)
 	}
 
 	return mismatches
 }
 
-func (e *Engine) detectMismatches(fieldPresence map[string]map[schemair.SchemaSource]fieldInfo, schemas []schemair.SchemaIR, section string) []Mismatch {
+func (e *Engine) detectMismatches(fieldPresence map[string]map[schemair.SchemaSource]fieldInfo, contributingSources []schemair.SchemaSource, section string) []Mismatch {
 	var mismatches []Mismatch
 
-	allSources := make(map[schemair.SchemaSource]bool)
-	for _, s := range schemas {
-		allSources[s.Source] = true
+	allSources := make(map[schemair.SchemaSource]bool, len(contributingSources))
+	for _, s := range contributingSources {
+		allSources[s] = true
 	}
 
-	for path, sourceMap := range fieldPresence {
-		presentSources := make([]schemair.SchemaSource, 0, len(sourceMap))
-		for src := range sourceMap {
-			presentSources = append(presentSources, src)
-		}
+	paths := make([]string, 0, len(fieldPresence))
+	for p := range fieldPresence {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
+		sourceMap := fieldPresence[path]
+		presentSources := sortedSources(sourceMap)
 
 		if len(sourceMap) < len(allSources) {
 			missingSources := make([]schemair.SchemaSource, 0)
-			for source := range allSources {
+			for _, source := range contributingSources {
 				if _, ok := sourceMap[source]; !ok {
 					missingSources = append(missingSources, source)
 				}
@@ -245,58 +321,67 @@ func (e *Engine) detectMismatches(fieldPresence map[string]map[schemair.SchemaSo
 		}
 
 		if len(sourceMap) >= 2 {
-			var firstCanon string
-			var firstSource schemair.SchemaSource
-			isFirst := true
+			sources := sortedSources(sourceMap)
+			seen := make(map[string]bool)
+			for i := 0; i < len(sources); i++ {
+				for j := i + 1; j < len(sources); j++ {
+					srcA, srcB := sources[i], sources[j]
+					infoA, infoB := sourceMap[srcA], sourceMap[srcB]
+					canonA, canonB := canonicalType(infoA.typ), canonicalType(infoB.typ)
 
-			for source, info := range sourceMap {
-				canon := canonicalType(info.typ)
-				if isFirst {
-					firstCanon = canon
-					firstSource = source
-					isFirst = false
-					continue
-				}
+					if canonA == canonB {
+						continue
+					}
 
-				if canon != firstCanon {
+					pairKey := canonA + ":" + canonB
+					if canonA > canonB {
+						pairKey = canonB + ":" + canonA
+					}
+					if seen[pairKey] {
+						continue
+					}
+					seen[pairKey] = true
+
+					severity := SeverityCritical
+					suggestion := fmt.Sprintf("Align type to '%s' across all sources", infoA.typ)
+
+					if areSubtypeCompatible(infoA.typ, infoB.typ) {
+						severity = SeverityInfo
+						suggestion = fmt.Sprintf("'%s' and '%s' are wire-compatible (both serialize as %s in JSON)", infoA.typ, infoB.typ, wireType(infoA.typ))
+					}
+
 					mismatches = append(mismatches, Mismatch{
 						Path:        path,
 						Type:        MismatchTypeDiff,
-						Description: fmt.Sprintf("Type mismatch: %s has '%s', %s has '%s'", firstSource, sourceMap[firstSource].typ, source, info.typ),
-						Expected:    sourceMap[firstSource].typ,
-						Actual:      info.typ,
+						Description: fmt.Sprintf("Type mismatch: %s has '%s', %s has '%s'", srcA, infoA.typ, srcB, infoB.typ),
+						Expected:    infoA.typ,
+						Actual:      infoB.typ,
 						InSources:   presentSources,
-						Severity:    SeverityCritical,
-						Suggestion:  fmt.Sprintf("Align type to '%s' across all sources", sourceMap[firstSource].typ),
+						Severity:    severity,
+						Suggestion:  suggestion,
 					})
 				}
 			}
 		}
 
 		if len(sourceMap) >= 2 {
-			var firstReq bool
-			var firstSource schemair.SchemaSource
-			isFirst := true
+			sources := sortedSources(sourceMap)
+			refSource := sources[0]
+			refReq := sourceMap[refSource].required
 
-			for source, info := range sourceMap {
-				if isFirst {
-					firstReq = info.required
-					firstSource = source
-					isFirst = false
-					continue
-				}
-
-				if info.required != firstReq {
+			for _, src := range sources[1:] {
+				if sourceMap[src].required != refReq {
 					mismatches = append(mismatches, Mismatch{
 						Path:        path,
 						Type:        MismatchOptionality,
-						Description: fmt.Sprintf("Optionality mismatch: %s=%v, %s=%v", firstSource, firstReq, source, info.required),
-						Expected:    firstReq,
-						Actual:      info.required,
+						Description: fmt.Sprintf("Optionality mismatch: %s=%v, %s=%v", refSource, refReq, src, sourceMap[src].required),
+						Expected:    refReq,
+						Actual:      sourceMap[src].required,
 						InSources:   presentSources,
 						Severity:    SeverityWarning,
 						Suggestion:  "Consider aligning optionality across sources",
 					})
+					break
 				}
 			}
 		}
@@ -364,9 +449,8 @@ func (e *Engine) hasViolations(mismatches []Mismatch) bool {
 
 func (e *Engine) calculateConfidence(schemas []schemair.SchemaIR, mismatches []Mismatch) *EndpointConfidence {
 	conf := &EndpointConfidence{
-		Score:     0,
-		Breakdown: make(map[string]float64),
-		Factors:   []string{},
+		Score:   0,
+		Factors: []string{},
 	}
 
 	var score float64 = 0
