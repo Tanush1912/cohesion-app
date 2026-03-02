@@ -17,6 +17,8 @@ Cohesion shows the truth at your system boundaries — not what your docs claim,
 - [Live Capture](#live-capture)
 - [Dual Sources & Reverse Proxy](#dual-sources--reverse-proxy)
 - [Live Diff](#live-diff)
+- [Live Handshake](#live-handshake)
+- [GitHub App Integration](#github-app-integration)
 - [Frontend UI](#frontend-ui)
 - [API Reference](#api-reference)
 - [Local Development](#local-development)
@@ -41,19 +43,23 @@ Every source produces the same language-agnostic **Schema IR**. The diff engine 
 ## Repository Map
 
 ```
-cohesion-api/
+cohesion-app/
 ├── cohesion_backend/          Go control plane, diff engine, live capture, reverse proxy
 │   ├── cmd/server/            Entry point
 │   ├── internal/
-│   │   ├── controlplane/      Chi router + HTTP handlers
-│   │   ├── services/          Live service, diff service, schema service
+│   │   ├── controlplane/      Chi router + HTTP handlers (incl. GitHub App webhooks)
+│   │   ├── crypto/            AES-256-GCM encryption for stored secrets
+│   │   ├── services/          Live service, diff service, schema service, GitHub installation service
+│   │   ├── repository/        PostgreSQL repositories
 │   │   └── models/            Database models
-│   └── pkg/
-│       ├── schemair/          Schema IR type definitions
-│       ├── diff/              Diff engine (compare, severity, confidence)
-│       └── runtime/           Runtime capture middleware + inference
+│   ├── pkg/
+│   │   ├── diff/              Diff engine (compare, severity, confidence)
+│   │   ├── github/            GitHub API fetcher + GitHub App authentication
+│   │   ├── sourcefile/        Language detection, test file filtering, skip directories
+│   │   └── analyzer/          Gemini-powered static analysis
+│   └── migrations/            PostgreSQL schema migrations
 ├── cohesion_fe_analyzer/      TypeScript analyzer (ts-morph) for frontend codebases
-├── cohesion_frontend/         Next.js App Router UI
+├── cohesion_frontend/         Next.js 16 App Router UI
 │   └── src/
 │       ├── app/               Pages: dashboard, project, endpoint, live, docs, settings
 │       ├── components/        UI kit, visualizations, live components
@@ -74,8 +80,9 @@ flowchart TD
         Dash["Dashboard"]
         Project["Project Detail"]
         Endpoint["Endpoint Detail + Handshake"]
-        Live["Live Capture (Unified / Dual / Diff)"]
+        Live["Live Capture (Unified / Dual / Diff / Handshake)"]
         Docs["Documentation"]
+        Settings["Settings + GitHub App"]
     end
 
     subgraph CP["Control Plane (Go + Chi)"]
@@ -84,6 +91,8 @@ flowchart TD
         DiffEngine["Diff Engine"]
         LiveService["Live Service + SSE"]
         Proxy["Reverse Proxy"]
+        GitHubApp["GitHub App Integration"]
+        Crypto["Encrypted Secret Storage"]
     end
 
     subgraph Analyzers["Analyzers"]
@@ -96,12 +105,14 @@ flowchart TD
     subgraph Storage["PostgreSQL"]
         SchemaIR[("Schema IR (JSONB)")]
         UserData[("Projects, Endpoints, Settings")]
+        Installations[("GitHub Installations")]
     end
 
     Dash --> Projects
     Endpoint --> DiffEngine
     Live --> LiveService
     Live --> Proxy
+    Settings --> GitHubApp
 
     BE --> SchemaStore
     FE --> SchemaStore
@@ -112,6 +123,8 @@ flowchart TD
     Projects --> UserData
     DiffEngine --> SchemaIR
     LiveService --> RT
+    GitHubApp --> Installations
+    Crypto --> UserData
 ```
 
 ### Data Flow
@@ -194,7 +207,9 @@ POST /api/analyze/scan    — scan local files
 POST /api/analyze/github  — scan a GitHub repository
 ```
 
-Supports: `.go`, `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.java`, `.rb`, `.rs`, `.php`
+**Supported languages:** Go, Python, TypeScript, JavaScript, Java, Ruby, Rust, PHP, C#, Kotlin, Elixir, Scala, Swift
+
+The `sourcefile` package handles language detection, test file filtering, and automatically skips non-source directories (`vendor`, `node_modules`, `.git`, `__pycache__`, `dist`, `build`, `target`, `.next`, etc.).
 
 ### Direct Schema Upload
 
@@ -346,13 +361,14 @@ Call `POST /api/live/infer` to convert buffered traffic into Schema IR:
 
 ### View Modes
 
-The Live page has three tabs:
+The Live page has four tabs:
 
 | Tab | Purpose |
 |-----|---------|
 | **Unified** | Single chronological stream of all captured requests regardless of source. Click any request to inspect full request/response bodies. Infer schemas from the entire buffer. |
 | **Dual Sources** | Side-by-side view of traffic from two different sources. Source selectors in the tab bar let you pick which two to compare. |
 | **Live Diff** | Compute a schema diff between two sources' inferred schemas. See [Live Diff](#live-diff). |
+| **Live Handshake** | Three-column handshake visualization showing how frontend and backend schemas align at runtime. See [Live Handshake](#live-handshake). |
 
 ---
 
@@ -491,11 +507,87 @@ Response:
 
 ---
 
+## Live Handshake
+
+Live Handshake provides a three-column, field-by-field visualization of how your frontend and backend API contracts align at runtime. While Live Diff tells you *what* is different, Live Handshake shows you *how* the two sides see each endpoint — side by side, with mismatches highlighted inline.
+
+### How It Works
+
+```mermaid
+flowchart TD
+    FE["Frontend Source Traffic"] --> InferFE["Infer Schemas"]
+    BE["Backend Source Traffic"] --> InferBE["Infer Schemas"]
+
+    InferFE --> Diff["Diff Engine"]
+    InferBE --> Diff
+
+    Diff --> Map["Build Endpoint Map<br/>(FE schema + BE schema + diff)"]
+    Map --> Render["Three-Column Handshake View"]
+```
+
+1. **Infer schemas per source** — Schemas are inferred from captured traffic for both the frontend and backend sources.
+2. **Compute diff** — The diff engine matches endpoints across both sets and compares them field by field.
+3. **Build handshake map** — Each endpoint is assembled into an entry containing the frontend schema, backend schema, and diff result.
+4. **Render** — The UI shows an endpoint list with status icons on the left, and a three-column Handshake View (Frontend / Agreement / Backend) on the right.
+
+### Endpoint Statuses
+
+| Icon | Status | Meaning |
+|------|--------|---------|
+| ✓ | **Match** | Frontend and backend schemas agree on all fields |
+| ○ | **Partial** | Some fields match, but there are mismatches (e.g. optional vs required) |
+| ✕ | **Violation** | Significant contract disagreement — missing fields or type mismatches |
+| • | **Unknown** | Only one side has traffic for this endpoint |
+
+### Live Handshake vs Live Diff
+
+| | Live Diff | Live Handshake |
+|-|-----------|----------------|
+| **Output** | Mismatch list per endpoint | Three-column schema overlay |
+| **Best for** | Quickly spotting differences | Understanding the full contract shape |
+| **Shows fields** | Only mismatched fields | All fields from both sides |
+| **Use case** | CI checks, regression detection | Design reviews, debugging contract gaps |
+
+---
+
+## GitHub App Integration
+
+Cohesion supports connecting GitHub accounts via a GitHub App for repository access. This provides a more secure alternative to personal access tokens and supports organization-level installations.
+
+### How It Works
+
+1. **Install the GitHub App** — From the Settings page, click "Connect Account" to install the Cohesion GitHub App on your GitHub account or organization.
+2. **Installation callback** — After installation, GitHub redirects back to Cohesion with an installation ID. The frontend saves this to the backend.
+3. **Authenticated repo access** — When scanning GitHub repositories, Cohesion can use the App installation token instead of a personal access token. App tokens are scoped to the repositories the user granted access to.
+4. **Encrypted storage** — Installation data is stored in PostgreSQL. Sensitive tokens and API keys are encrypted at rest using AES-256-GCM.
+
+### Managing Connections
+
+The Settings page shows all connected GitHub accounts with:
+- Account name and type (user or organization)
+- Disconnect button to remove an installation
+- Fallback to personal access token for accounts without the App installed
+
+### Configuration
+
+The GitHub App requires these environment variables:
+
+```
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_PATH=./github-app-private-key.pem
+GITHUB_APP_CLIENT_ID=Iv1.abc123
+GITHUB_APP_CLIENT_SECRET=secret
+GITHUB_APP_SLUG=cohesion
+FRONTEND_URL=http://localhost:3000
+```
+
+---
+
 ## Frontend UI
 
 ### Stack
 
-Next.js 14 (App Router), TypeScript, Tailwind CSS, Zustand, React Flow, D3.js, Framer Motion, Clerk (auth), Lucide icons.
+Next.js 16 (App Router, Turbopack), TypeScript, Tailwind CSS, Zustand, React Flow, D3.js, Framer Motion, Clerk (auth), Lucide icons, Sonner (toasts).
 
 ### Pages
 
@@ -510,11 +602,12 @@ flowchart LR
     Live --> Unified["Unified View"]
     Live --> Dual["Dual Sources"]
     Live --> Diff["Live Diff"]
+    Live --> Handshake["Live Handshake"]
 
     Endpoint --> Flow["Flow View"]
     Endpoint --> List["List View"]
     Endpoint --> Code["Code View"]
-    Endpoint --> Handshake["Handshake View"]
+    Endpoint --> HandshakeView["Handshake View"]
 ```
 
 ### Dashboard (`/`)
@@ -528,25 +621,35 @@ Endpoint table with method badges, path, source indicators, and status. Upload s
 ### Endpoint Detail (`/projects/:id/endpoints/:id`)
 
 Split-pane layout:
-- **Left panel** — Schema visualization in three modes:
+- **Left panel** — Schema visualization in four modes:
   - **Flow** — Interactive React Flow graph showing request/response field connections
   - **List** — Structured tree view of fields
   - **Code** — Raw Schema IR JSON
   - **Handshake** — Three-column view (Frontend Intent / Agreement / Backend Capability)
 - **Right panel** — Diff analysis with mismatch list, severity badges, and suggestions
-- **Source tabs** — Switch between backend-static, frontend-static, runtime-observed
+- **Source tabs** — Switch between backend-static, frontend-static, runtime-observed, handshake
 
 ### Live Capture (`/live`)
 
-Three view modes (Unified / Dual Sources / Live Diff), project selector, capture controls, proxy source configuration. Real-time SSE streaming. Schema inference.
+Four view modes (Unified / Dual Sources / Live Diff / Live Handshake), project selector, capture controls, proxy source configuration. Real-time SSE streaming. Schema inference.
 
 ### Documentation (`/docs`)
 
-Six documentation tabs with interactive code examples, step-by-step guides, and an "On this page" table of contents sidebar with scroll tracking.
+Seven documentation tabs with interactive code examples, step-by-step guides, and an "On this page" table of contents sidebar with scroll tracking:
+
+1. **Import Codebase** — Getting started with project creation and schema scanning
+2. **Schemas & Handshake** — Schema sources and visualization modes
+3. **Diff Engine** — How the diff engine works and mismatch types
+4. **Live Capture** — Middleware integration guides (Node.js, Python, Go), SSE streaming, ingest API
+5. **Dual Sources** — Proxy configuration and side-by-side traffic comparison
+6. **Live Diff** — Runtime schema diffing between two sources
+7. **Live Handshake** — Three-column handshake visualization from live traffic
 
 ### Settings (`/settings`)
 
-Configure Gemini API key and model for AI-powered analysis. Configure GitHub personal access token for repository scanning.
+- **AI Configuration** — Gemini API key and model selection for AI-powered analysis
+- **GitHub Integration** — Connect GitHub accounts via the Cohesion GitHub App, with fallback to personal access token
+- **Connected Accounts** — View and manage GitHub App installations per account/organization
 
 ---
 
@@ -582,7 +685,7 @@ Configure Gemini API key and model for AI-powered analysis. Configure GitHub per
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/diff/{endpointId}` | Compute diff across all sources |
+| `POST` | `/api/diff/{endpointId}` | Compute diff across all sources |
 | `GET` | `/api/stats` | Aggregated match/partial/violation counts |
 
 ### Live Capture
@@ -597,9 +700,19 @@ Configure Gemini API key and model for AI-powered analysis. Configure GitHub per
 | `POST` | `/api/live/capture/start` | Start self-capture middleware |
 | `POST` | `/api/live/capture/stop` | Stop self-capture middleware |
 | `GET` | `/api/live/sources?project_id={id}` | List distinct source labels |
+| `GET` | `/api/live/schemas?project_id={id}&source={s}` | Get inferred schemas for a source |
 | `POST` | `/api/live/diff` | Diff two sources' inferred schemas |
 | `POST` | `/api/live/proxy/configure` | Register a reverse proxy target |
 | `*` | `/api/live/proxy/{projectId}/{label}/*` | Reverse proxy passthrough |
+
+### GitHub Integration
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/github/status` | Check if GitHub App is configured, get install URL |
+| `POST` | `/api/github/installations` | Save a GitHub App installation |
+| `GET` | `/api/github/installations` | List connected GitHub accounts |
+| `DELETE` | `/api/github/installations/{installationID}` | Remove a GitHub installation |
 
 ### User Settings
 
@@ -616,9 +729,38 @@ Configure Gemini API key and model for AI-powered analysis. Configure GitHub per
 
 - Go 1.22+
 - Node 18+
-- PostgreSQL (or adjust config for SQLite)
+- PostgreSQL
 - (Optional) Gemini API key for AI-powered analysis
-- (Optional) GitHub token for repo scanning
+- (Optional) GitHub App or personal access token for repo scanning
+
+### Environment Variables
+
+```bash
+# Backend (cohesion_backend/.env)
+DATABASE_URL=postgres://user:pass@localhost:5432/cohesion
+PORT=8080
+ENVIRONMENT=development
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_MODEL=gemini-2.0-flash
+CLERK_SECRET_KEY=sk_test_...
+CLERK_PUBLISHABLE_KEY=pk_test_...
+ENCRYPTION_KEY=               # Optional — 32-byte hex key for encrypting stored secrets
+
+# GitHub App (optional)
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY_PATH=./github-app-private-key.pem
+GITHUB_APP_CLIENT_ID=Iv1.abc123
+GITHUB_APP_CLIENT_SECRET=secret
+GITHUB_APP_SLUG=cohesion
+FRONTEND_URL=http://localhost:3000
+
+# Frontend (cohesion_frontend/.env)
+NEXT_PUBLIC_API_URL=http://localhost:8080
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+NEXT_PUBLIC_CLERK_SIGN_IN_URL=/
+NEXT_PUBLIC_GITHUB_APP_SLUG=cohesion
+```
 
 ### Backend
 
@@ -652,6 +794,7 @@ npm run build
 3. Upload or scan schemas (backend + frontend)
 4. Open an endpoint to see the handshake view and diff
 5. Go to Live Capture, start self-capture, browse the UI, then infer schemas to get runtime data
+6. Switch to Live Handshake to see how frontend and backend contracts align
 
 ---
 
@@ -680,8 +823,10 @@ Any service that can POST captured request/response pairs to `/api/live/ingest` 
 - Runtime capture is opt-in — must be explicitly started
 - Static analysis performs no code execution (AST / AI only)
 - Request/response bodies are buffered in-memory with a 200-request circular buffer per project
-- API keys (Gemini, GitHub) are stored encrypted and masked in API responses
+- API keys and tokens are encrypted at rest using AES-256-GCM (when `ENCRYPTION_KEY` is set) and masked in API responses
+- GitHub App installations use scoped installation tokens rather than broad personal access tokens
 - Self-capture excludes `/api/live/*` paths to prevent recursive capture
+- Authentication via Clerk on all protected routes
 - CORS is configured on the backend — adjust for production deployments
 
 ---
