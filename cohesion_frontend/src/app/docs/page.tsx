@@ -21,6 +21,7 @@ import {
     Columns2,
     Link2,
     AlignLeft,
+    Workflow,
 } from "lucide-react";
 import { Header } from "@/components/layout/header";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +35,7 @@ const tabs = [
     { id: "live", label: "Live Capture", icon: Radio },
     { id: "dual", label: "Dual Sources", icon: Columns2 },
     { id: "livediff", label: "Live Diff", icon: ArrowRightLeft },
+    { id: "livehandshake", label: "Live Handshake", icon: Workflow },
 ] as const;
 
 type TabId = (typeof tabs)[number]["id"];
@@ -179,6 +181,16 @@ const tocByTab: Record<TabId, TocEntry[]> = {
         { id: "how-live-diff-works", label: "How Live Diff works", depth: 0 },
         { id: "when-to-use-live-diff", label: "When to use Live Diff", depth: 0 },
         { id: "quick-start", label: "Quick start", depth: 0 },
+        { id: "api-reference", label: "API reference", depth: 0 },
+    ],
+    livehandshake: [
+        { id: "what-is-live-handshake", label: "What is Live Handshake?", depth: 0 },
+        { id: "how-it-works", label: "How it works", depth: 0 },
+        { id: "reading-the-ui", label: "Reading the UI", depth: 0 },
+        { id: "endpoint-statuses", label: "Endpoint statuses", depth: 1 },
+        { id: "handshake-detail-panel", label: "Handshake detail panel", depth: 1 },
+        { id: "live-handshake-quick-start", label: "Quick start", depth: 0 },
+        { id: "live-handshake-vs-live-diff", label: "Live Handshake vs Live Diff", depth: 0 },
         { id: "api-reference", label: "API reference", depth: 0 },
     ],
 };
@@ -1079,6 +1091,177 @@ function LiveDiffTab() {
     );
 }
 
+function LiveHandshakeTab() {
+    return (
+        <div className="space-y-6">
+            <p className="text-sm text-white/50">
+                Live Handshake gives you a three-column, field-by-field view of how your frontend and backend API contracts align at runtime. While <strong className="text-white/70">Live Diff</strong> tells you <em>what</em> is different, Live Handshake shows you <em>how</em> the two sides see each endpoint&mdash;side by side, with mismatches highlighted inline.
+            </p>
+
+            <DocCard title="What is Live Handshake?" id="what-is-live-handshake" icon={<Workflow className="w-4 h-4" />}>
+                <p>Live Handshake combines two things:</p>
+                <ul className="list-disc list-inside space-y-1 text-white/50 ml-1">
+                    <li><strong className="text-white/70">Schema inference</strong> &mdash; schemas are inferred from the live traffic captured for each source (frontend and backend).</li>
+                    <li><strong className="text-white/70">Handshake visualization</strong> &mdash; the inferred schemas are placed into a three-column layout (Frontend &middot; Handshake &middot; Backend) so you can see exactly which fields each side sends and where they disagree.</li>
+                </ul>
+                <p className="mt-2">This is the same Handshake View used on the static endpoint detail page, but applied to runtime-observed traffic instead of statically analyzed code.</p>
+            </DocCard>
+
+            <DocCard title="How it works" id="how-it-works" icon={<Zap className="w-4 h-4" />}>
+                <p>When you click <Kbd>Compute Handshake</Kbd>, the following happens:</p>
+                <Step n={1} title="Infer schemas per source" id="step-infer">
+                    <p>Cohesion groups captured requests by <Kbd>method + path</Kbd> for each source, then infers a <strong className="text-white/70">SchemaIR</strong> from the observed request and response bodies. Fields present in every request are marked required; fields seen in only some requests are marked optional.</p>
+                </Step>
+                <Step n={2} title="Compute diff" id="step-diff">
+                    <p>The diff engine matches endpoints across both source schemas by method and path, then compares them field by field to identify mismatches (missing fields, type differences, optionality conflicts).</p>
+                </Step>
+                <Step n={3} title="Build the handshake map" id="step-map">
+                    <p>Each endpoint is assembled into an <Kbd>EndpointEntry</Kbd> containing the frontend schema, backend schema, and the diff result. Endpoints are sorted alphabetically by <Kbd>method:path</Kbd>.</p>
+                </Step>
+                <Step n={4} title="Render" id="step-render">
+                    <p>The UI splits into a left sidebar listing all endpoints with status indicators, and a right panel showing the full Handshake View for the selected endpoint.</p>
+                </Step>
+            </DocCard>
+
+            <DocCard title="Reading the UI" id="reading-the-ui">
+                <div id="endpoint-statuses" className="scroll-mt-24">
+                    <p className="text-xs font-semibold text-white/70 mb-2">Endpoint statuses</p>
+                    <p>Each endpoint in the left sidebar shows a status icon:</p>
+                    <div className="mt-2 space-y-2">
+                        <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-green-500 w-4 text-center">{"\u2713"}</span>
+                            <div>
+                                <strong className="text-white/70 text-xs">Match</strong>
+                                <span className="text-xs text-white/40 ml-2">Frontend and backend schemas agree on all fields</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-amber-400 w-4 text-center">{"\u25CB"}</span>
+                            <div>
+                                <strong className="text-white/70 text-xs">Partial</strong>
+                                <span className="text-xs text-white/40 ml-2">Some fields match, but there are mismatches (e.g. optional vs required)</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-red-400 w-4 text-center">{"\u2715"}</span>
+                            <div>
+                                <strong className="text-white/70 text-xs">Violation</strong>
+                                <span className="text-xs text-white/40 ml-2">Significant contract disagreement&mdash;missing fields or type mismatches</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-white/20 w-4 text-center">{"\u2022"}</span>
+                            <div>
+                                <strong className="text-white/70 text-xs">Unknown</strong>
+                                <span className="text-xs text-white/40 ml-2">Only one side has traffic for this endpoint</span>
+                            </div>
+                        </div>
+                    </div>
+                    <p className="mt-3">Endpoints with <span className="text-amber-400/60 text-xs">no frontend</span> or <span className="text-amber-400/60 text-xs">no backend</span> labels indicate the endpoint was observed in only one source&apos;s traffic.</p>
+                </div>
+
+                <div id="handshake-detail-panel" className="scroll-mt-24 mt-4">
+                    <p className="text-xs font-semibold text-white/70 mb-2">Handshake detail panel</p>
+                    <p>Clicking an endpoint opens the three-column Handshake View on the right:</p>
+                    <ul className="list-disc list-inside space-y-1 text-white/50 ml-1 mt-2">
+                        <li><strong className="text-white/70">Left column</strong> &mdash; the frontend schema (fields and types the frontend sends or expects)</li>
+                        <li><strong className="text-white/70">Center column</strong> &mdash; the handshake overlay showing which fields both sides agree on, with mismatch highlights</li>
+                        <li><strong className="text-white/70">Right column</strong> &mdash; the backend schema (fields and types the backend sends or expects)</li>
+                    </ul>
+                    <p className="mt-2">Fields highlighted in <span className="text-red-400 text-xs">red</span> have a type mismatch. Fields that appear only on one side are rendered as empty in the other column so you can immediately spot missing fields.</p>
+                </div>
+            </DocCard>
+
+            <DocCard title="Quick start" id="live-handshake-quick-start">
+                <Step n={1} title="Capture traffic from two sources" id="lh-step-1">
+                    <p>On the Live page, start capturing traffic. You need requests from at least two sources&mdash;typically one representing your frontend and one representing your backend. Use proxy sources or middleware to tag traffic with different source labels.</p>
+                </Step>
+                <Step n={2} title="Assign frontend and backend" id="lh-step-2">
+                    <p>Use the <Kbd>Frontend Source</Kbd> and <Kbd>Backend Source</Kbd> dropdowns at the top of the Live page to specify which source represents each side.</p>
+                </Step>
+                <Step n={3} title="Switch to Live Handshake" id="lh-step-3">
+                    <p>Click the <Kbd>Live Handshake</Kbd> tab. The header bar shows the assigned sources and their request counts.</p>
+                </Step>
+                <Step n={4} title="Compute Handshake" id="lh-step-4">
+                    <p>Click <Kbd>Compute Handshake</Kbd>. The button is enabled once both sources have at least one captured request. Cohesion infers schemas, diffs them, and renders the handshake view.</p>
+                </Step>
+                <Step n={5} title="Explore endpoints" id="lh-step-5">
+                    <p>Browse the endpoint list on the left. Click any endpoint to see its field-by-field handshake. Look for status icons and mismatch counts to find contract issues.</p>
+                </Step>
+            </DocCard>
+
+            <DocCard title="Live Handshake vs Live Diff" id="live-handshake-vs-live-diff">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                        <thead>
+                            <tr className="border-b border-white/10">
+                                <th className="text-left py-2 pr-4 text-white/50 font-medium"></th>
+                                <th className="text-left py-2 pr-4 text-white/50 font-medium">Live Diff</th>
+                                <th className="text-left py-2 text-white/50 font-medium">Live Handshake</th>
+                            </tr>
+                        </thead>
+                        <tbody className="text-white/40">
+                            <tr className="border-b border-white/5">
+                                <td className="py-2 pr-4 text-white/60">Output</td>
+                                <td className="py-2 pr-4">Mismatch list per endpoint</td>
+                                <td className="py-2">Three-column schema overlay</td>
+                            </tr>
+                            <tr className="border-b border-white/5">
+                                <td className="py-2 pr-4 text-white/60">Best for</td>
+                                <td className="py-2 pr-4">Quickly spotting differences</td>
+                                <td className="py-2">Understanding the full contract shape</td>
+                            </tr>
+                            <tr className="border-b border-white/5">
+                                <td className="py-2 pr-4 text-white/60">Shows fields</td>
+                                <td className="py-2 pr-4">Only mismatched fields</td>
+                                <td className="py-2">All fields from both sides</td>
+                            </tr>
+                            <tr>
+                                <td className="py-2 pr-4 text-white/60">Use case</td>
+                                <td className="py-2 pr-4">CI checks, regression detection</td>
+                                <td className="py-2">Design reviews, debugging contract gaps</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </DocCard>
+
+            <DocCard title="API reference" id="api-reference" icon={<Terminal className="w-4 h-4" />}>
+                <p>The Live Handshake view uses two API endpoints under the hood:</p>
+                <p className="mt-3 mb-1 text-xs font-semibold text-white/70">Infer schemas for a source</p>
+                <CodeBlock
+                    filename="live-schemas.sh"
+                    code={`curl "http://localhost:8080/api/live/schemas?project_id=YOUR_PROJECT_ID&source=self"
+
+# Response: array of SchemaIR objects
+# [
+#   {
+#     "endpoint": "/api/users",
+#     "method": "GET",
+#     "request": { ... },
+#     "response": { "200": { ... } }
+#   }
+# ]`}
+                />
+                <p className="mt-3 mb-1 text-xs font-semibold text-white/70">Compute diff between two sources</p>
+                <CodeBlock
+                    filename="live-diff.sh"
+                    code={`curl -X POST http://localhost:8080/api/live/diff \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "project_id": "YOUR_PROJECT_ID",
+    "source_a": "self",
+    "source_b": "staging-api"
+  }'
+
+# Response: LiveDiffResponse with per-endpoint results`}
+                />
+                <p className="mt-3 text-xs text-white/40">The frontend calls both in parallel (<Kbd>Promise.all</Kbd>) when you click Compute Handshake, then merges the schemas and diff results into the handshake visualization.</p>
+            </DocCard>
+        </div>
+    );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN PAGE
    ═══════════════════════════════════════════════════════════════════════ */
@@ -1093,6 +1276,7 @@ export default function DocsPage() {
         live: <LiveTab />,
         dual: <DualSourcesTab />,
         livediff: <LiveDiffTab />,
+        livehandshake: <LiveHandshakeTab />,
     };
 
     return (
