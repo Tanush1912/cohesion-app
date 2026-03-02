@@ -14,6 +14,7 @@ import {
     Columns2,
     ArrowRightLeft,
     Radio,
+    Workflow,
 } from "lucide-react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
@@ -22,12 +23,13 @@ import { LiveOnboarding } from "@/components/live/live-onboarding";
 import { SourceConfig } from "@/components/live/source-config";
 import { DualTrafficView } from "@/components/live/dual-traffic-view";
 import { LiveDiffView } from "@/components/live/live-diff-view";
+import { LiveHandshakeView } from "@/components/live/live-handshake-view";
 import { useAppStore } from "@/stores/app-store";
 import { api } from "@/lib/api";
 import { LiveCapturedRequest } from "@/lib/types";
 import { enableFrontendCapture, disableFrontendCapture } from "@/lib/live-capture";
 
-type ViewMode = "unified" | "dual" | "diff";
+type ViewMode = "unified" | "dual" | "diff" | "handshake";
 
 interface ProxySource {
     label: string;
@@ -39,6 +41,7 @@ const VIEW_TABS: { id: ViewMode; label: string; icon: typeof Radio }[] = [
     { id: "unified", label: "Unified", icon: Radio },
     { id: "dual", label: "Dual Sources", icon: Columns2 },
     { id: "diff", label: "Live Diff", icon: ArrowRightLeft },
+    { id: "handshake", label: "Live Handshake", icon: Workflow },
 ];
 
 export default function LivePage() {
@@ -235,7 +238,7 @@ export default function LivePage() {
         if (selectedSourceB === label) setSelectedSourceB("");
     };
 
-    const isDualOrDiff = viewMode === "dual" || viewMode === "diff";
+    const isDualOrDiff = viewMode === "dual" || viewMode === "diff" || viewMode === "handshake";
 
     return (
         <div className="min-h-screen flex flex-col">
@@ -357,9 +360,14 @@ export default function LivePage() {
                         })}
                     </div>
 
-                    {/* Source selectors for dual/diff mode */}
+                    {/* Source selectors for dual/diff/handshake mode */}
                     {isDualOrDiff && availableSources.length > 1 && (
                         <div className="flex items-center gap-2 ml-auto px-3">
+                            {viewMode === "handshake" && (
+                                <span className="text-[10px] text-white/30 uppercase tracking-wide">
+                                    Frontend
+                                </span>
+                            )}
                             <select
                                 value={selectedSourceA}
                                 onChange={(e) =>
@@ -374,8 +382,13 @@ export default function LivePage() {
                                 ))}
                             </select>
                             <span className="text-[10px] text-white/20">
-                                vs
+                                {viewMode === "handshake" ? "\u2194" : "vs"}
                             </span>
+                            {viewMode === "handshake" && (
+                                <span className="text-[10px] text-white/30 uppercase tracking-wide">
+                                    Backend
+                                </span>
+                            )}
                             <select
                                 value={selectedSourceB}
                                 onChange={(e) =>
@@ -644,6 +657,20 @@ export default function LivePage() {
                     projectId={selectedProjectId}
                     sourceA={selectedSourceA}
                     sourceB={selectedSourceB || "self"}
+                    requestCountA={
+                        (requestsBySource[selectedSourceA] ?? []).length
+                    }
+                    requestCountB={
+                        (requestsBySource[selectedSourceB] ?? []).length
+                    }
+                />
+            )}
+
+            {viewMode === "handshake" && selectedProjectId && (
+                <LiveHandshakeView
+                    projectId={selectedProjectId}
+                    frontendSource={selectedSourceA}
+                    backendSource={selectedSourceB || "self"}
                     requestCountA={
                         (requestsBySource[selectedSourceA] ?? []).length
                     }

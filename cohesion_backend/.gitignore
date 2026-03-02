@@ -1,5 +1,5 @@
 .env
-.env.local
+.env.*
 *.exe
 *.exe~
 *.dll
@@ -13,3 +13,7 @@ vendor/
 .vscode/
 *.log
 tmp/
+bin/
+server
+cohesion-server
+.next/

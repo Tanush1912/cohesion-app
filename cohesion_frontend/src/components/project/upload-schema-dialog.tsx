@@ -422,7 +422,7 @@ export function UploadSchemaDialog({ projectId, open, onOpenChange, onSuccess, o
                             <div className="p-3 border border-white/10 rounded bg-white/5">
                                 <p className="text-xs text-white/80 leading-relaxed">
                                     Scan a GitHub repository to extract API schemas. Requires a{" "}
-                                    <a href="/settings" className="text-blue-400 hover:underline">GitHub token</a> in Settings.
+                                    <a href="/settings" className="text-blue-400 hover:underline">GitHub App connection or token</a> in Settings.
                                 </p>
                             </div>
 

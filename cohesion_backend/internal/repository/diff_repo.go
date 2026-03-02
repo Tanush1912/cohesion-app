@@ -17,6 +17,8 @@ func NewDiffRepository(db *DB) *DiffRepository {
 	return &DiffRepository{db: db}
 }
 
+const maxDiffsPerEndpoint = 10
+
 func (r *DiffRepository) Create(ctx context.Context, diff *models.Diff) error {
 	diff.ID = uuid.New()
 	diff.CreatedAt = time.Now()
@@ -25,8 +27,18 @@ func (r *DiffRepository) Create(ctx context.Context, diff *models.Diff) error {
 		INSERT INTO diffs (id, endpoint_id, diff_data, sources_compared, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 	`, diff.ID, diff.EndpointID, diff.DiffData, diff.SourcesCompared, diff.CreatedAt)
+	if err != nil {
+		return err
+	}
+	_, _ = r.db.Pool.Exec(ctx, `
+		DELETE FROM diffs WHERE id IN (
+			SELECT id FROM diffs WHERE endpoint_id = $1
+			ORDER BY created_at DESC
+			OFFSET $2
+		)
+	`, diff.EndpointID, maxDiffsPerEndpoint)
 
-	return err
+	return nil
 }
 
 func (r *DiffRepository) GetByEndpointID(ctx context.Context, endpointID uuid.UUID) ([]models.Diff, error) {

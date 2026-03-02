@@ -118,7 +118,7 @@ export function DiffPanel({ diff, isLoading }: DiffPanelProps) {
             {mismatches.length > 0 ? (
                 <div className="border border-white/10 rounded overflow-hidden">
                     {mismatches.map((mismatch, index) => (
-                        <MismatchItem key={mismatch.path} mismatch={mismatch} index={index} />
+                        <MismatchItem key={`${mismatch.path}-${mismatch.type}`} mismatch={mismatch} index={index} />
                     ))}
                 </div>
             ) : diff.status === "match" ? (

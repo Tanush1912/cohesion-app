@@ -30,14 +30,37 @@ type SchemaUploadRequest struct {
 }
 
 func (s *SchemaService) UploadSchemas(ctx context.Context, projectID uuid.UUID, schemas []schemair.SchemaIR) error {
-	var dbSchemas []models.Schema
+	if len(schemas) == 0 {
+		return nil
+	}
+
+	type epKey struct{ path, method string }
+	epMap := make(map[epKey]*models.Endpoint)
+	var uniqueEndpoints []*models.Endpoint
 
 	for _, schema := range schemas {
 		normalizedPath := s.normalizePath(schema.Endpoint)
-		endpoint, err := s.getOrCreateEndpoint(ctx, projectID, normalizedPath, schema.Method)
-		if err != nil {
-			return err
+		key := epKey{normalizedPath, schema.Method}
+		if _, exists := epMap[key]; !exists {
+			ep := &models.Endpoint{
+				ProjectID: projectID,
+				Path:      normalizedPath,
+				Method:    schema.Method,
+			}
+			epMap[key] = ep
+			uniqueEndpoints = append(uniqueEndpoints, ep)
 		}
+	}
+
+	if err := s.endpointRepo.UpsertBatch(ctx, uniqueEndpoints); err != nil {
+		return err
+	}
+
+	dbSchemas := make([]models.Schema, 0, len(schemas))
+	for _, schema := range schemas {
+		normalizedPath := s.normalizePath(schema.Endpoint)
+		key := epKey{normalizedPath, schema.Method}
+		endpoint := epMap[key]
 
 		schemaData := map[string]interface{}{
 			"endpoint": normalizedPath,
@@ -54,11 +77,7 @@ func (s *SchemaService) UploadSchemas(ctx context.Context, projectID uuid.UUID, 
 		})
 	}
 
-	if len(dbSchemas) > 0 {
-		return s.schemaRepo.UpsertBatch(ctx, dbSchemas)
-	}
-
-	return nil
+	return s.schemaRepo.UpsertBatch(ctx, dbSchemas)
 }
 
 func (s *SchemaService) normalizePath(path string) string {
@@ -73,28 +92,6 @@ func (s *SchemaService) normalizePath(path string) string {
 	}
 	path = pathParamRegex.ReplaceAllString(path, "{}")
 	return path
-}
-
-func (s *SchemaService) getOrCreateEndpoint(ctx context.Context, projectID uuid.UUID, path, method string) (*models.Endpoint, error) {
-	existing, err := s.endpointRepo.GetByPathAndMethod(ctx, projectID, path, method)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return existing, nil
-	}
-
-	endpoint := &models.Endpoint{
-		ProjectID: projectID,
-		Path:      path,
-		Method:    method,
-	}
-
-	if err := s.endpointRepo.Upsert(ctx, endpoint); err != nil {
-		return nil, err
-	}
-
-	return s.endpointRepo.GetByPathAndMethod(ctx, projectID, path, method)
 }
 
 func (s *SchemaService) GetByEndpoint(ctx context.Context, endpointID uuid.UUID) ([]models.Schema, error) {

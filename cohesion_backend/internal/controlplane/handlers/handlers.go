@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,20 +12,23 @@ import (
 
 	"github.com/cohesion-api/cohesion_backend/internal/auth"
 	"github.com/cohesion-api/cohesion_backend/internal/models"
+	"github.com/cohesion-api/cohesion_backend/internal/repository"
 	"github.com/cohesion-api/cohesion_backend/internal/services"
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer"
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer/gemini"
-	ghfetcher "github.com/cohesion-api/cohesion_backend/pkg/github"
+	ghpkg "github.com/cohesion-api/cohesion_backend/pkg/github"
 	"github.com/cohesion-api/cohesion_backend/pkg/schemair"
 	"github.com/go-chi/chi/v5"
+	gh "github.com/google/go-github/v68/github"
 	"github.com/google/uuid"
 )
 
 // ProxyTarget holds a configured proxy destination.
 type ProxyTarget struct {
-	Label     string   `json:"label"`
-	TargetURL *url.URL `json:"-"`
-	RawURL    string   `json:"target_url"`
+	Label      string   `json:"label"`
+	TargetURL  *url.URL `json:"-"`
+	RawURL     string   `json:"target_url"`
+	ResolvedIP string   `json:"-"`
 }
 
 type Handlers struct {
@@ -34,7 +38,10 @@ type Handlers struct {
 	diffService         *services.DiffService
 	liveService         *services.LiveService
 	userSettingsService *services.UserSettingsService
+	ghInstallService    *services.GitHubInstallationService
 	analyzer            analyzer.Analyzer
+	githubAppAuth       *ghpkg.AppAuth
+	githubAppSlug       string
 
 	proxyMu      sync.RWMutex
 	proxyTargets map[string]map[string]*ProxyTarget // projectID → label → target
@@ -47,7 +54,10 @@ func New(
 	diffService *services.DiffService,
 	liveService *services.LiveService,
 	userSettingsService *services.UserSettingsService,
+	ghInstallService *services.GitHubInstallationService,
 	a analyzer.Analyzer,
+	githubAppAuth *ghpkg.AppAuth,
+	githubAppSlug string,
 ) *Handlers {
 	return &Handlers{
 		projectService:      projectService,
@@ -56,7 +66,10 @@ func New(
 		diffService:         diffService,
 		liveService:         liveService,
 		userSettingsService: userSettingsService,
+		ghInstallService:    ghInstallService,
 		analyzer:            a,
+		githubAppAuth:       githubAppAuth,
+		githubAppSlug:       githubAppSlug,
 		proxyTargets:        make(map[string]map[string]*ProxyTarget),
 	}
 }
@@ -138,6 +151,10 @@ func (h *Handlers) DeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	userID := auth.UserID(r.Context())
 	if err := h.projectService.Delete(r.Context(), projectID, userID); err != nil {
+		if err == repository.ErrNotFound {
+			respondError(w, http.StatusNotFound, "Project not found")
+			return
+		}
 		respondError(w, http.StatusInternalServerError, "Failed to delete project")
 		return
 	}
@@ -274,15 +291,8 @@ func (h *Handlers) ScanCodebase(w http.ResponseWriter, r *http.Request) {
 
 		schemas, err = ga.AnalyzeFiles(r.Context(), sourceFiles, language, mode)
 	} else if req.DirPath != "" {
-		files, language := gemini.DiscoverFiles(req.DirPath)
-		if len(files) == 0 {
-			respondError(w, http.StatusBadRequest, "No source files found in "+req.DirPath)
-			return
-		}
-		if req.Language != "" {
-			language = req.Language
-		}
-		schemas, err = ga.AnalyzeFiles(r.Context(), files, language, mode)
+		respondError(w, http.StatusBadRequest, "dir_path is not supported for security reasons. Upload files directly using the 'files' field instead.")
+		return
 	} else {
 		respondError(w, http.StatusBadRequest, "Either 'files' or 'dir_path' must be provided")
 		return
@@ -335,7 +345,7 @@ func (h *Handlers) ScanGitHubRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	owner, repo, err := ghfetcher.ParseRepoURL(req.RepoURL)
+	owner, repo, err := ghpkg.ParseRepoURL(req.RepoURL)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -367,12 +377,33 @@ func (h *Handlers) ScanGitHubRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if settings.GitHubToken == "" {
-		respondError(w, http.StatusBadRequest, "Add a GitHub token in Settings to scan repositories")
+	var ghClient *gh.Client
+	if h.githubAppAuth.IsConfigured() {
+		installations, err := h.ghInstallService.List(r.Context(), userID)
+		if err == nil {
+			for _, inst := range installations {
+				client, err := h.githubAppAuth.InstallationClient(inst.InstallationID)
+				if err != nil {
+					continue
+				}
+
+				_, _, err = client.Repositories.Get(r.Context(), owner, repo)
+				if err == nil {
+					ghClient = client
+					break
+				}
+			}
+		}
+	}
+	if ghClient == nil && settings.GitHubToken != "" {
+		ghClient = gh.NewClient(nil).WithAuthToken(settings.GitHubToken)
+	}
+	if ghClient == nil {
+		respondError(w, http.StatusBadRequest, "Connect a GitHub App or add a Personal Access Token in Settings")
 		return
 	}
 
-	files, language, err := ghfetcher.FetchRepoFiles(r.Context(), settings.GitHubToken, owner, repo, req.Branch, req.Path)
+	files, language, err := ghpkg.FetchRepoFilesWithClient(r.Context(), ghClient, owner, repo, req.Branch, req.Path)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "GitHub fetch failed: "+err.Error())
 		return
@@ -544,12 +575,18 @@ func (h *Handlers) SaveUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, _ := h.userSettingsService.Get(r.Context(), userID)
-	if strings.HasPrefix(req.GeminiAPIKey, "••") && existing.GeminiAPIKey != "" {
-		req.GeminiAPIKey = existing.GeminiAPIKey
+	existing, err := h.userSettingsService.Get(r.Context(), userID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to retrieve existing settings")
+		return
 	}
-	if strings.HasPrefix(req.GitHubToken, "••") && existing.GitHubToken != "" {
-		req.GitHubToken = existing.GitHubToken
+	if existing != nil {
+		if strings.HasPrefix(req.GeminiAPIKey, "••") && existing.GeminiAPIKey != "" {
+			req.GeminiAPIKey = existing.GeminiAPIKey
+		}
+		if strings.HasPrefix(req.GitHubToken, "••") && existing.GitHubToken != "" {
+			req.GitHubToken = existing.GitHubToken
+		}
 	}
 
 	if err := h.userSettingsService.Save(r.Context(), userID, req.GeminiAPIKey, req.GeminiModel, req.GitHubToken); err != nil {
@@ -594,13 +631,18 @@ func maskSecret(s string) string {
 	if len(s) > 4 {
 		return "••••••••" + s[len(s)-4:]
 	}
-	return s
+	if len(s) > 0 {
+		return "••••••••"
+	}
+	return ""
 }
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("ERROR: failed to encode JSON response: %v", err)
+	}
 }
 
 func respondError(w http.ResponseWriter, status int, message string) {

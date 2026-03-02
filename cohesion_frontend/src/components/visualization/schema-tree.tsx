@@ -143,7 +143,8 @@ export function SchemaTree({ schema, source, mismatches: _mismatches, title = "S
             .attr("r", 3)
             .attr("fill", (d) => {
                 if (d.data.mismatch) {
-                    const type = d.data.mismatch.type;
+                    const { type, severity } = d.data.mismatch;
+                    if (severity === "info") return "#60a5fa";
                     if (type === "missing" || type === "type_mismatch") return "#f87171";
                     if (type === "optionality_mismatch") return "#fbbf24";
                 }

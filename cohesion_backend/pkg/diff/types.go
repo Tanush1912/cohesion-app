@@ -40,7 +40,6 @@ type Result struct {
 }
 
 type EndpointConfidence struct {
-	Score     float64            `json:"score"`
-	Breakdown map[string]float64 `json:"breakdown"`
-	Factors   []string           `json:"factors"`
+	Score   float64  `json:"score"`
+	Factors []string `json:"factors"`
 }

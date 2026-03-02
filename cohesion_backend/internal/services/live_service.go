@@ -33,49 +33,93 @@ type LiveEvent struct {
 }
 
 type projectBuffer struct {
-	requests []LiveRequest
-	maxSize  int
+	data    []LiveRequest
+	maxSize int
+	head    int
+	count   int
 }
 
 func (b *projectBuffer) add(req LiveRequest) {
-	if len(b.requests) >= b.maxSize {
-		b.requests = b.requests[1:]
+	if b.count < b.maxSize {
+		b.data = append(b.data, req)
+		b.count++
+		b.head = b.count % b.maxSize
+	} else {
+		b.data[b.head] = req
+		b.head = (b.head + 1) % b.maxSize
 	}
-	b.requests = append(b.requests, req)
+}
+
+func (b *projectBuffer) all() []LiveRequest {
+	if b.count < b.maxSize {
+		result := make([]LiveRequest, b.count)
+		copy(result, b.data[:b.count])
+		return result
+	}
+	result := make([]LiveRequest, b.maxSize)
+	copy(result, b.data[b.head:])
+	copy(result[b.maxSize-b.head:], b.data[:b.head])
+	return result
+}
+
+func (b *projectBuffer) clear() {
+	b.data = b.data[:0]
+	b.head = 0
+	b.count = 0
+}
+
+type captureEntry struct {
+	ownerID string
 }
 
 type LiveService struct {
-	mu               sync.RWMutex
-	buffers          map[uuid.UUID]*projectBuffer
-	subscribers      map[uuid.UUID]map[chan LiveEvent]struct{}
-	maxPerProj       int
-	captureProjectID uuid.UUID
+	mu          sync.RWMutex
+	buffers     map[uuid.UUID]*projectBuffer
+	subscribers map[uuid.UUID]map[chan LiveEvent]struct{}
+	maxPerProj  int
+	captures    map[uuid.UUID]captureEntry
 }
 
 func NewLiveService() *LiveService {
 	return &LiveService{
 		buffers:     make(map[uuid.UUID]*projectBuffer),
 		subscribers: make(map[uuid.UUID]map[chan LiveEvent]struct{}),
+		captures:    make(map[uuid.UUID]captureEntry),
 		maxPerProj:  200,
 	}
 }
 
-func (s *LiveService) StartCapture(projectID uuid.UUID) {
+func (s *LiveService) StartCapture(projectID uuid.UUID, ownerID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.captureProjectID = projectID
+	s.captures[projectID] = captureEntry{ownerID: ownerID}
 }
 
-func (s *LiveService) StopCapture() {
+func (s *LiveService) StopCapture(projectID uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.captureProjectID = uuid.Nil
+	delete(s.captures, projectID)
 }
 
-func (s *LiveService) IsCapturing() (bool, uuid.UUID) {
+func (s *LiveService) IsCapturingForUser(userID string) (bool, uuid.UUID) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.captureProjectID != uuid.Nil, s.captureProjectID
+	for projectID, entry := range s.captures {
+		if entry.ownerID == userID {
+			return true, projectID
+		}
+	}
+	return false, uuid.Nil
+}
+
+func (s *LiveService) IsProjectCapturing(projectID uuid.UUID) (bool, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.captures[projectID]
+	if !ok {
+		return false, ""
+	}
+	return true, entry.ownerID
 }
 
 type captureResponseWriter struct {
@@ -94,10 +138,16 @@ func (w *captureResponseWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-func (s *LiveService) SelfCaptureMiddleware() func(http.Handler) http.Handler {
+func (s *LiveService) SelfCaptureMiddleware(userIDFunc func(r *http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			active, projectID := s.IsCapturing()
+			userID := userIDFunc(r)
+			if userID == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			active, projectID := s.IsCapturingForUser(userID)
 			if !active {
 				next.ServeHTTP(w, r)
 				return
@@ -147,20 +197,19 @@ func (s *LiveService) SelfCaptureMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-func (s *LiveService) IngestRequests(projectID uuid.UUID, requests []LiveRequest) []runtime.CapturedRequest {
+func (s *LiveService) IngestRequests(projectID uuid.UUID, requests []LiveRequest) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	buf, ok := s.buffers[projectID]
 	if !ok {
 		buf = &projectBuffer{
-			requests: make([]LiveRequest, 0, s.maxPerProj),
-			maxSize:  s.maxPerProj,
+			data:    make([]LiveRequest, 0, s.maxPerProj),
+			maxSize: s.maxPerProj,
 		}
 		s.buffers[projectID] = buf
 	}
 
-	var captured []runtime.CapturedRequest
 	for i := range requests {
 		req := &requests[i]
 		if req.ID == "" {
@@ -171,23 +220,12 @@ func (s *LiveService) IngestRequests(projectID uuid.UUID, requests []LiveRequest
 		}
 		buf.add(*req)
 
-		captured = append(captured, runtime.CapturedRequest{
-			Path:             req.Path,
-			Method:           req.Method,
-			RequestBody:      req.RequestBody,
-			StatusCode:       req.StatusCode,
-			Response:         req.ResponseBody,
-			ObservationCount: 1,
-		})
-
 		s.broadcast(projectID, LiveEvent{
 			Type:    "request",
 			Payload: *req,
 			Source:  req.Source,
 		})
 	}
-
-	return captured
 }
 
 func (s *LiveService) GetRecentRequests(projectID uuid.UUID) []LiveRequest {
@@ -199,9 +237,7 @@ func (s *LiveService) GetRecentRequests(projectID uuid.UUID) []LiveRequest {
 		return []LiveRequest{}
 	}
 
-	result := make([]LiveRequest, len(buf.requests))
-	copy(result, buf.requests)
-	return result
+	return buf.all()
 }
 
 func (s *LiveService) GetBufferedAsCaptured(projectID uuid.UUID) []runtime.CapturedRequest {
@@ -213,16 +249,17 @@ func (s *LiveService) GetBufferedAsCaptured(projectID uuid.UUID) []runtime.Captu
 		return nil
 	}
 
-	var result []runtime.CapturedRequest
-	for _, req := range buf.requests {
-		result = append(result, runtime.CapturedRequest{
+	requests := buf.all()
+	result := make([]runtime.CapturedRequest, len(requests))
+	for i, req := range requests {
+		result[i] = runtime.CapturedRequest{
 			Path:             req.Path,
 			Method:           req.Method,
 			RequestBody:      req.RequestBody,
 			StatusCode:       req.StatusCode,
 			Response:         req.ResponseBody,
 			ObservationCount: 1,
-		})
+		}
 	}
 	return result
 }
@@ -245,7 +282,7 @@ func (s *LiveService) GetBufferedBySource(projectID uuid.UUID, source string) []
 	}
 
 	var result []LiveRequest
-	for _, req := range buf.requests {
+	for _, req := range buf.all() {
 		if req.Source == source {
 			result = append(result, req)
 		}
@@ -263,7 +300,7 @@ func (s *LiveService) GetBufferedAsCapturedBySource(projectID uuid.UUID, source 
 	}
 
 	var result []runtime.CapturedRequest
-	for _, req := range buf.requests {
+	for _, req := range buf.all() {
 		if req.Source == source {
 			result = append(result, runtime.CapturedRequest{
 				Path:             req.Path,
@@ -296,7 +333,7 @@ func (s *LiveService) GetDistinctSources(projectID uuid.UUID) []string {
 	}
 
 	seen := make(map[string]struct{})
-	for _, req := range buf.requests {
+	for _, req := range buf.all() {
 		if req.Source != "" {
 			seen[req.Source] = struct{}{}
 		}
@@ -313,9 +350,7 @@ func (s *LiveService) ClearBuffer(projectID uuid.UUID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if buf, ok := s.buffers[projectID]; ok {
-		buf.requests = buf.requests[:0]
-	}
+	delete(s.buffers, projectID)
 
 	s.broadcast(projectID, LiveEvent{Type: "clear"})
 }
@@ -347,13 +382,6 @@ func (s *LiveService) broadcast(projectID uuid.UUID, event LiveEvent) {
 	if !ok {
 		return
 	}
-	data, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-	var evt LiveEvent
-	json.Unmarshal(data, &evt)
-
 	for ch := range subs {
 		select {
 		case ch <- event:

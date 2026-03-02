@@ -6,7 +6,7 @@ import { Check, X } from "lucide-react";
 
 const DISMISSED_KEY = "cohesion-live-onboarding-dismissed";
 
-type ViewMode = "unified" | "dual" | "diff";
+type ViewMode = "unified" | "dual" | "diff" | "handshake";
 
 interface LiveOnboardingProps {
     hasProject: boolean;
@@ -21,12 +21,12 @@ interface Step {
 }
 
 function getSteps(viewMode: ViewMode): Step[] {
-    if (viewMode === "dual" || viewMode === "diff") {
+    if (viewMode === "dual" || viewMode === "diff" || viewMode === "handshake") {
         return [
             { label: "Select a project" },
             { label: "Configure sources" },
             { label: "Start capture" },
-            { label: viewMode === "diff" ? "Compute diff" : "Compare traffic" },
+            { label: viewMode === "diff" ? "Compute diff" : viewMode === "handshake" ? "Compute handshake" : "Compare traffic" },
         ];
     }
     return [
@@ -43,7 +43,7 @@ function getCompleted(
     hasInferred: boolean,
     hasConfiguredSources: boolean
 ): boolean[] {
-    if (viewMode === "dual" || viewMode === "diff") {
+    if (viewMode === "dual" || viewMode === "diff" || viewMode === "handshake") {
         return [
             hasProject,
             hasConfiguredSources,

@@ -10,52 +10,11 @@ import (
 	gh "github.com/google/go-github/v68/github"
 
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer/gemini"
+	"github.com/cohesion-api/cohesion_backend/pkg/sourcefile"
 )
-
-var skipDirs = map[string]bool{
-	"vendor": true, ".git": true, "node_modules": true, "__pycache__": true,
-	".venv": true, "venv": true, "dist": true, "build": true, "target": true,
-	".idea": true, ".vscode": true, ".next": true, ".nuxt": true,
-}
-
-var sourceExtensions = map[string]bool{
-	".go": true, ".py": true, ".ts": true, ".js": true, ".java": true,
-	".rb": true, ".rs": true, ".php": true, ".cs": true, ".kt": true,
-	".ex": true, ".exs": true, ".scala": true, ".swift": true,
-}
-
-var languageHints = map[string]string{
-	".go": "Go", ".py": "Python", ".ts": "TypeScript", ".js": "JavaScript",
-	".java": "Java", ".rb": "Ruby", ".rs": "Rust", ".php": "PHP",
-	".cs": "C#", ".kt": "Kotlin", ".ex": "Elixir", ".exs": "Elixir",
-	".scala": "Scala", ".swift": "Swift",
-}
 
 const maxTotalBytes = 900_000 * 4
 const maxFileBytes = 100 * 1024
-
-func isTestFile(path string) bool {
-	lower := strings.ToLower(path)
-	return strings.HasSuffix(lower, "_test.go") ||
-		strings.HasPrefix(filepath.Base(lower), "test_") ||
-		strings.HasSuffix(lower, "_test.py") ||
-		strings.HasSuffix(lower, ".test.ts") ||
-		strings.HasSuffix(lower, ".test.js") ||
-		strings.HasSuffix(lower, ".spec.ts") ||
-		strings.HasSuffix(lower, ".spec.js") ||
-		strings.Contains(lower, "/test/") ||
-		strings.Contains(lower, "/tests/") ||
-		strings.Contains(lower, "/__tests__/")
-}
-
-func inSkippedDir(path string) bool {
-	for _, part := range strings.Split(path, "/") {
-		if skipDirs[part] {
-			return true
-		}
-	}
-	return false
-}
 
 func ParseRepoURL(input string) (owner, repo string, err error) {
 	input = strings.TrimSpace(input)
@@ -85,7 +44,10 @@ func FetchRepoFiles(ctx context.Context, token, owner, repo, branch, subPath str
 	if token != "" {
 		client = client.WithAuthToken(token)
 	}
+	return FetchRepoFilesWithClient(ctx, client, owner, repo, branch, subPath)
+}
 
+func FetchRepoFilesWithClient(ctx context.Context, client *gh.Client, owner, repo, branch, subPath string) ([]gemini.SourceFile, string, error) {
 	if branch == "" {
 		branch = "main"
 	}
@@ -122,16 +84,16 @@ func FetchRepoFiles(ctx context.Context, token, owner, repo, branch, subPath str
 			continue
 		}
 
-		if inSkippedDir(path) {
+		if sourcefile.InSkippedDir(path) {
 			continue
 		}
 
 		ext := strings.ToLower(filepath.Ext(path))
-		if !sourceExtensions[ext] {
+		if !sourcefile.SourceExtensions[ext] {
 			continue
 		}
 
-		if isTestFile(path) {
+		if sourcefile.IsTestFile(path) {
 			continue
 		}
 
@@ -196,7 +158,7 @@ func FetchRepoFiles(ctx context.Context, token, owner, repo, branch, subPath str
 	for ext, count := range extCount {
 		if count > maxCount {
 			maxCount = count
-			language = languageHints[ext]
+			language = sourcefile.LanguageHints[ext]
 		}
 	}
 

@@ -52,3 +52,13 @@ type UserSettings struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
+
+type GitHubInstallation struct {
+	ID                 uuid.UUID `json:"id"`
+	ClerkUserID        string    `json:"clerk_user_id"`
+	InstallationID     int64     `json:"installation_id"`
+	GitHubAccountLogin string    `json:"github_account_login"`
+	GitHubAccountType  string    `json:"github_account_type"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cohesion-api/cohesion_backend/internal/models"
@@ -64,7 +65,15 @@ func (r *ProjectRepository) List(ctx context.Context, ownerID string) ([]models.
 	return projects, rows.Err()
 }
 
+var ErrNotFound = fmt.Errorf("not found")
+
 func (r *ProjectRepository) Delete(ctx context.Context, id uuid.UUID, ownerID string) error {
-	_, err := r.db.Pool.Exec(ctx, `DELETE FROM projects WHERE id = $1 AND owner_id = $2`, id, ownerID)
-	return err
+	result, err := r.db.Pool.Exec(ctx, `DELETE FROM projects WHERE id = $1 AND owner_id = $2`, id, ownerID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

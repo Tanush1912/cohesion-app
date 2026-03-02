@@ -115,7 +115,7 @@ export const api = {
 
     diff: {
         compute: (endpointId: string) =>
-            fetchAPI<DiffResult>(`/api/diff/${endpointId}`),
+            fetchAPI<DiffResult>(`/api/diff/${endpointId}`, { method: "POST" }),
     },
 
     stats: {
@@ -131,6 +131,29 @@ export const api = {
                 method: "PUT",
                 body: JSON.stringify({ gemini_api_key: geminiApiKey, gemini_model: geminiModel, github_token: githubToken }),
             }),
+    },
+
+    github: {
+        status: () =>
+            fetchAPI<{ configured: boolean; install_url?: string }>("/api/github/status"),
+        saveInstallation: (installationId: number) =>
+            fetchAPI<{ message: string; installation_id: number; github_account_login: string; github_account_type: string }>(
+                "/api/github/installations",
+                {
+                    method: "POST",
+                    body: JSON.stringify({ installation_id: installationId }),
+                },
+            ),
+        listInstallations: () =>
+            fetchAPI<Array<{
+                id: string;
+                installation_id: number;
+                github_account_login: string;
+                github_account_type: string;
+                created_at: string;
+            }>>("/api/github/installations"),
+        removeInstallation: (installationId: number) =>
+            fetchAPI<void>(`/api/github/installations/${installationId}`, { method: "DELETE" }),
     },
 
     live: {
@@ -174,6 +197,8 @@ export const api = {
                 method: "POST",
                 body: JSON.stringify({ project_id: projectId, source_a: sourceA, source_b: sourceB }),
             }),
+        liveSchemas: (projectId: string, source: string) =>
+            fetchAPI<SchemaIR[]>(`/api/live/schemas?project_id=${projectId}&source=${encodeURIComponent(source)}`),
         configureProxy: (projectId: string, label: string, targetUrl: string) =>
             fetchAPI<{ message: string; proxy_url: string }>("/api/live/proxy/configure", {
                 method: "POST",

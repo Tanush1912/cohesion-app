@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -188,22 +190,20 @@ func (h *Handlers) StartCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.liveService.StartCapture(projectID)
+	userID := auth.UserID(r.Context())
+	h.liveService.StartCapture(projectID, userID)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Self-capture started"})
 }
 
 func (h *Handlers) StopCapture(w http.ResponseWriter, r *http.Request) {
-	active, projectID := h.liveService.IsCapturing()
-	if active {
-		userID := auth.UserID(r.Context())
-		project, _ := h.projectService.GetByID(r.Context(), projectID, userID)
-		if project == nil {
-			respondError(w, http.StatusNotFound, "No active capture for your projects")
-			return
-		}
+	userID := auth.UserID(r.Context())
+	active, projectID := h.liveService.IsCapturingForUser(userID)
+	if !active {
+		respondJSON(w, http.StatusOK, map[string]string{"message": "No active capture"})
+		return
 	}
 
-	h.liveService.StopCapture()
+	h.liveService.StopCapture(projectID)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Self-capture stopped"})
 }
 
@@ -228,6 +228,52 @@ func (h *Handlers) ClearLiveBuffer(w http.ResponseWriter, r *http.Request) {
 
 	h.liveService.ClearBuffer(projectID)
 	respondJSON(w, http.StatusOK, map[string]string{"message": "Buffer cleared"})
+}
+
+func isPrivateIP(ip net.IP) bool {
+	privateRanges := []string{
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"127.0.0.0/8",
+		"169.254.0.0/16",
+		"::1/128", "fc00::/7", "fe80::/10",
+	}
+	for _, cidr := range privateRanges {
+		_, network, _ := net.ParseCIDR(cidr)
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateProxyTarget(targetURL *url.URL) (string, error) {
+	host := targetURL.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("empty host")
+	}
+
+	if host == "localhost" || host == "0.0.0.0" || host == "[::1]" {
+		return "", fmt.Errorf("localhost targets are not allowed")
+	}
+
+	if targetURL.Scheme != "http" && targetURL.Scheme != "https" {
+		return "", fmt.Errorf("only http and https schemes are allowed")
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve host: %w", err)
+	}
+	var resolvedIP string
+	for _, ip := range ips {
+		if isPrivateIP(ip) {
+			return "", fmt.Errorf("target resolves to a private/reserved IP address")
+		}
+		if resolvedIP == "" {
+			resolvedIP = ip.String()
+		}
+	}
+	return resolvedIP, nil
 }
 
 // ConfigureProxy sets up a proxy target for a given project and label.
@@ -263,14 +309,21 @@ func (h *Handlers) ConfigureProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resolvedIP, err := validateProxyTarget(targetURL)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Proxy target not allowed: "+err.Error())
+		return
+	}
+
 	h.proxyMu.Lock()
 	if h.proxyTargets[req.ProjectID] == nil {
 		h.proxyTargets[req.ProjectID] = make(map[string]*ProxyTarget)
 	}
 	h.proxyTargets[req.ProjectID][req.Label] = &ProxyTarget{
-		Label:     req.Label,
-		TargetURL: targetURL,
-		RawURL:    req.TargetURL,
+		Label:      req.Label,
+		TargetURL:  targetURL,
+		RawURL:     req.TargetURL,
+		ResolvedIP: resolvedIP,
 	}
 	h.proxyMu.Unlock()
 
@@ -330,7 +383,6 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
-	// Set up reverse proxy
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.TargetURL.Scheme
@@ -339,6 +391,26 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 			req.URL.RawQuery = r.URL.RawQuery
 			req.Host = target.TargetURL.Host
 		},
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{}).DialContext,
+			Proxy:       http.ProxyFromEnvironment,
+		},
+	}
+	if target.ResolvedIP != "" {
+		pinnedIP := target.ResolvedIP
+		port := target.TargetURL.Port()
+		if port == "" {
+			if target.TargetURL.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		proxy.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
+			},
+		}
 	}
 
 	// Capture response
@@ -457,6 +529,37 @@ func (h *Handlers) LiveDiff(w http.ResponseWriter, r *http.Request) {
 		"source_b":       req.SourceB,
 		"endpoint_count": len(schemaMap),
 	})
+}
+
+func (h *Handlers) GetLiveSchemas(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := r.URL.Query().Get("project_id")
+	if projectIDStr == "" {
+		respondError(w, http.StatusBadRequest, "project_id query parameter is required")
+		return
+	}
+
+	projectID, err := uuid.Parse(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	if h.requireProjectAccess(w, r, projectID) == nil {
+		return
+	}
+
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		respondError(w, http.StatusBadRequest, "source query parameter is required")
+		return
+	}
+
+	schemas := h.liveService.InferFromBufferBySource(projectID, source)
+	if schemas == nil {
+		schemas = []*schemair.SchemaIR{}
+	}
+
+	respondJSON(w, http.StatusOK, schemas)
 }
 
 // GetLiveSources returns the distinct source labels in the buffer.
