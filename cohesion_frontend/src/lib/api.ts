@@ -154,6 +154,14 @@ export const api = {
             }>>("/api/github/installations"),
         removeInstallation: (installationId: number) =>
             fetchAPI<void>(`/api/github/installations/${installationId}`, { method: "DELETE" }),
+        listRepos: () =>
+            fetchAPI<Array<{
+                full_name: string;
+                owner: string;
+                name: string;
+                private: boolean;
+                default_branch: string;
+            }>>("/api/github/repos"),
     },
 
     live: {

@@ -3,11 +3,16 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DB struct {
 	Pool *pgxpool.Pool
+}
+
+func (db *DB) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return db.Pool.Begin(ctx)
 }
 
 func NewDB(ctx context.Context, databaseURL string) (*DB, error) {

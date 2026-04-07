@@ -34,7 +34,7 @@ func NewRouter(svc *Services) http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   []string{svc.FrontendURL},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},
@@ -90,6 +90,7 @@ func NewRouter(svc *Services) http.Handler {
 				r.Post("/installations", h.SaveGitHubInstallation)
 				r.Get("/installations", h.ListGitHubInstallations)
 				r.Delete("/installations/{installationID}", h.RemoveGitHubInstallation)
+				r.Get("/repos", h.ListGitHubRepos)
 			})
 
 			r.Route("/live", func(r chi.Router) {

@@ -255,7 +255,13 @@ func (e *Engine) compareResponses(schemas []schemair.SchemaIR) []Mismatch {
 		}
 	}
 
+	sortedCodes := make([]int, 0, len(statusCodes))
 	for code := range statusCodes {
+		sortedCodes = append(sortedCodes, code)
+	}
+	sort.Ints(sortedCodes)
+
+	for _, code := range sortedCodes {
 		fieldPresence := make(map[string]map[schemair.SchemaSource]fieldInfo)
 
 		var contributingSources []schemair.SchemaSource

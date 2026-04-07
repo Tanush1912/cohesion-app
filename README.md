@@ -744,7 +744,7 @@ GEMINI_API_KEY=your-gemini-api-key
 GEMINI_MODEL=gemini-2.0-flash
 CLERK_SECRET_KEY=sk_test_...
 CLERK_PUBLISHABLE_KEY=pk_test_...
-ENCRYPTION_KEY=               # Optional — 32-byte hex key for encrypting stored secrets
+ENCRYPTION_KEY=               # Required in production — 32-byte hex key for encrypting stored secrets (app will refuse to start without it when ENVIRONMENT=production)
 
 # GitHub App (optional)
 GITHUB_APP_ID=123456
@@ -823,7 +823,7 @@ Any service that can POST captured request/response pairs to `/api/live/ingest` 
 - Runtime capture is opt-in — must be explicitly started
 - Static analysis performs no code execution (AST / AI only)
 - Request/response bodies are buffered in-memory with a 200-request circular buffer per project
-- API keys and tokens are encrypted at rest using AES-256-GCM (when `ENCRYPTION_KEY` is set) and masked in API responses
+- API keys and tokens are encrypted at rest using AES-256-GCM and masked in API responses. `ENCRYPTION_KEY` is required in production — the server will refuse to start without it
 - GitHub App installations use scoped installation tokens rather than broad personal access tokens
 - Self-capture excludes `/api/live/*` paths to prevent recursive capture
 - Authentication via Clerk on all protected routes

@@ -29,7 +29,9 @@ func Load() *Config {
 	appID, _ := strconv.ParseInt(getEnv("GITHUB_APP_ID", "0"), 10, 64)
 
 	var privateKey []byte
-	if path := getEnv("GITHUB_APP_PRIVATE_KEY_PATH", ""); path != "" {
+	if key := getEnv("GITHUB_APP_PRIVATE_KEY", ""); key != "" {
+		privateKey = []byte(key)
+	} else if path := getEnv("GITHUB_APP_PRIVATE_KEY_PATH", ""); path != "" {
 		privateKey, _ = os.ReadFile(path)
 	}
 

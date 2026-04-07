@@ -238,6 +238,41 @@ func (r *EndpointRepository) UpsertBatch(ctx context.Context, endpoints []*model
 	return nil
 }
 
+func (r *EndpointRepository) UpsertBatchTx(ctx context.Context, tx pgx.Tx, endpoints []*models.Endpoint) error {
+	if len(endpoints) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	batch := &pgx.Batch{}
+
+	for _, ep := range endpoints {
+		if ep.ID == uuid.Nil {
+			ep.ID = uuid.New()
+		}
+		ep.UpdatedAt = now
+		batch.Queue(`
+			INSERT INTO endpoints (id, project_id, path, method, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (project_id, path, method)
+			DO UPDATE SET updated_at = EXCLUDED.updated_at
+			RETURNING id
+		`, ep.ID, ep.ProjectID, ep.Path, ep.Method, now, now)
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for _, ep := range endpoints {
+		var returnedID uuid.UUID
+		if err := br.QueryRow().Scan(&returnedID); err != nil {
+			return err
+		}
+		ep.ID = returnedID
+	}
+	return nil
+}
+
 func (r *EndpointRepository) GetByPathAndMethod(ctx context.Context, projectID uuid.UUID, path, method string) (*models.Endpoint, error) {
 	var endpoint models.Endpoint
 	err := r.db.Pool.QueryRow(ctx, `

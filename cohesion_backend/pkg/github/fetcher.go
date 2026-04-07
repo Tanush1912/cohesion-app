@@ -52,13 +52,17 @@ func FetchRepoFilesWithClient(ctx context.Context, client *gh.Client, owner, rep
 		branch = "main"
 	}
 
-	ref, _, err := client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
+	ref, _, err := withRetry(ctx, func() (*gh.Reference, *gh.Response, error) {
+		return client.Git.GetRef(ctx, owner, repo, "refs/heads/"+branch)
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve branch %q: %w", branch, err)
 	}
 	sha := ref.GetObject().GetSHA()
 
-	tree, _, err := client.Git.GetTree(ctx, owner, repo, sha, true)
+	tree, _, err := withRetry(ctx, func() (*gh.Tree, *gh.Response, error) {
+		return client.Git.GetTree(ctx, owner, repo, sha, true)
+	})
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get repo tree: %w", err)
 	}
@@ -122,7 +126,9 @@ func FetchRepoFilesWithClient(ctx context.Context, client *gh.Client, owner, rep
 			break
 		}
 
-		blob, _, err := client.Git.GetBlob(ctx, owner, repo, c.blobSHA)
+		blob, _, err := withRetry(ctx, func() (*gh.Blob, *gh.Response, error) {
+			return client.Git.GetBlob(ctx, owner, repo, c.blobSHA)
+		})
 		if err != nil {
 			continue
 		}

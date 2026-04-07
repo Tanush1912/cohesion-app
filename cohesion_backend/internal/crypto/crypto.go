@@ -30,6 +30,15 @@ func getSecret() string {
 	return s
 }
 
+// RequireKeyInProduction returns an error if ENCRYPTION_KEY is not set.
+// Call this at startup when ENVIRONMENT=production to prevent plaintext secret storage.
+func RequireKeyInProduction() error {
+	if os.Getenv("ENCRYPTION_KEY") == "" {
+		return errors.New("ENCRYPTION_KEY is required in production — refusing to start with plaintext secret storage")
+	}
+	return nil
+}
+
 func Encrypt(plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", nil

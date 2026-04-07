@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { X, Folder, FolderOpen, Server, Monitor, Braces, Github, GitBranch, AlertTriangle } from "lucide-react";
+import { X, Folder, FolderOpen, Server, Monitor, Braces, Github, GitBranch, AlertTriangle, Loader2, Lock, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -95,14 +95,29 @@ export function UploadSchemaDialog({ projectId, open, onOpenChange, onSuccess, o
     const [ghPath, setGhPath] = useState("");
     const [ghScanType, setGhScanType] = useState<"backend" | "frontend">("backend");
     const [hasGeminiKey, setHasGeminiKey] = useState(true);
+    const [ghRepos, setGhRepos] = useState<Array<{ full_name: string; owner: string; name: string; private: boolean; default_branch: string }>>([]);
+    const [ghReposLoading, setGhReposLoading] = useState(false);
+    const [ghRepoSearch, setGhRepoSearch] = useState("");
+    const [ghHasApp, setGhHasApp] = useState(false);
 
     useEffect(() => {
         if (open) {
             api.userSettings.get().then((settings) => {
                 setHasGeminiKey(settings.gemini_api_key !== "");
             }).catch(() => {});
+            api.github.status().then((s) => setGhHasApp(s.configured)).catch(() => {});
         }
     }, [open]);
+
+    useEffect(() => {
+        if (open && tab === "github" && ghRepos.length === 0 && !ghReposLoading) {
+            setGhReposLoading(true);
+            api.github.listRepos()
+                .then((repos) => setGhRepos(repos))
+                .catch(() => {})
+                .finally(() => setGhReposLoading(false));
+        }
+    }, [open, tab, ghRepos.length, ghReposLoading]);
 
     const handlePickFolder = useCallback(async () => {
         try {
@@ -252,6 +267,7 @@ export function UploadSchemaDialog({ projectId, open, onOpenChange, onSuccess, o
         setGhRepoUrl("");
         setGhBranch("");
         setGhPath("");
+        setGhRepoSearch("");
     };
 
     const resetScanState = () => {
@@ -419,13 +435,6 @@ export function UploadSchemaDialog({ projectId, open, onOpenChange, onSuccess, o
                     {/* GitHub tab content */}
                     {isGitHubTab && (
                         <div className="space-y-4 py-2">
-                            <div className="p-3 border border-white/10 rounded bg-white/5">
-                                <p className="text-xs text-white/80 leading-relaxed">
-                                    Scan a GitHub repository to extract API schemas. Requires a{" "}
-                                    <a href="/settings" className="text-blue-400 hover:underline">GitHub App connection or token</a> in Settings.
-                                </p>
-                            </div>
-
                             {!hasGeminiKey && (
                                 <div className="flex items-center gap-2 p-2.5 border border-amber-500/30 rounded bg-amber-500/10">
                                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
@@ -437,17 +446,73 @@ export function UploadSchemaDialog({ projectId, open, onOpenChange, onSuccess, o
                                 </div>
                             )}
 
+                            {/* Repo picker */}
                             <div>
                                 <label className="block text-xs text-white/50 mb-2">Repository</label>
-                                <div className="relative">
-                                    <Github className="absolute left-2.5 top-2.5 w-4 h-4 text-white/30" />
-                                    <Input
-                                        value={ghRepoUrl}
-                                        onChange={(e) => setGhRepoUrl(e.target.value)}
-                                        placeholder="owner/repo or https://github.com/owner/repo"
-                                        className="pl-9 font-mono text-xs"
-                                    />
-                                </div>
+                                {ghReposLoading ? (
+                                    <div className="flex items-center gap-2 p-4 border border-white/10 rounded bg-white/[0.02] text-xs text-white/40">
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        Loading repositories...
+                                    </div>
+                                ) : ghRepos.length > 0 ? (
+                                    <div className="space-y-2">
+                                        <div className="relative">
+                                            <Search className="absolute left-2.5 top-2.5 w-4 h-4 text-white/30" />
+                                            <Input
+                                                value={ghRepoSearch}
+                                                onChange={(e) => setGhRepoSearch(e.target.value)}
+                                                placeholder="Search repositories..."
+                                                className="pl-9 text-xs"
+                                            />
+                                        </div>
+                                        <div className="max-h-[200px] overflow-y-auto border border-white/10 rounded divide-y divide-white/[0.06]">
+                                            {ghRepos
+                                                .filter((r) => r.full_name.toLowerCase().includes(ghRepoSearch.toLowerCase()))
+                                                .map((repo) => (
+                                                    <button
+                                                        key={repo.full_name}
+                                                        onClick={() => {
+                                                            setGhRepoUrl(repo.full_name);
+                                                            if (!ghBranch) setGhBranch(repo.default_branch);
+                                                        }}
+                                                        className={`w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors ${
+                                                            ghRepoUrl === repo.full_name
+                                                                ? "bg-white/10 text-white"
+                                                                : "hover:bg-white/[0.04] text-white/70"
+                                                        }`}
+                                                    >
+                                                        <Github className="w-3.5 h-3.5 text-white/40 shrink-0" />
+                                                        <span className="font-mono truncate">{repo.full_name}</span>
+                                                        {repo.private && <Lock className="w-3 h-3 text-white/30 shrink-0" />}
+                                                    </button>
+                                                ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {ghHasApp ? (
+                                            <p className="text-[10px] text-white/30">
+                                                No repositories found. Make sure the Cohesion GitHub App has access to your repos in{" "}
+                                                <a href="/settings" className="text-blue-400 hover:underline">Settings</a>.
+                                            </p>
+                                        ) : (
+                                            <p className="text-[10px] text-white/30">
+                                                Connect your GitHub account in{" "}
+                                                <a href="/settings" className="text-blue-400 hover:underline">Settings</a>{" "}
+                                                to see your repositories, or enter a URL below.
+                                            </p>
+                                        )}
+                                        <div className="relative">
+                                            <Github className="absolute left-2.5 top-2.5 w-4 h-4 text-white/30" />
+                                            <Input
+                                                value={ghRepoUrl}
+                                                onChange={(e) => setGhRepoUrl(e.target.value)}
+                                                placeholder="owner/repo or https://github.com/owner/repo"
+                                                className="pl-9 font-mono text-xs"
+                                            />
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">

@@ -14,12 +14,25 @@ import (
 	"strings"
 	"time"
 
+	"crypto/tls"
+
 	"github.com/cohesion-api/cohesion_backend/internal/auth"
 	"github.com/cohesion-api/cohesion_backend/internal/services"
 	"github.com/cohesion-api/cohesion_backend/pkg/diff"
 	"github.com/cohesion-api/cohesion_backend/pkg/schemair"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+)
+
+const (
+	// maxProxyBodySize is the maximum request/response body size the proxy will buffer (10 MB).
+	maxProxyBodySize = 10 * 1024 * 1024
+	// proxyDialTimeout is the timeout for establishing a connection to the target.
+	proxyDialTimeout = 10 * time.Second
+	// proxyTLSHandshakeTimeout is the timeout for TLS handshake with the target.
+	proxyTLSHandshakeTimeout = 10 * time.Second
+	// proxyResponseHeaderTimeout is the timeout waiting for the target's response headers.
+	proxyResponseHeaderTimeout = 30 * time.Second
 )
 
 type IngestRequest struct {
@@ -83,7 +96,6 @@ func (h *Handlers) LiveStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -365,11 +377,16 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	h.proxyMu.RUnlock()
 
-	// Read and buffer request body
+	// Read and buffer request body with size limit
 	var reqBody map[string]interface{}
 	var reqBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 {
-		reqBodyBytes, _ = io.ReadAll(r.Body)
+		limited := io.LimitReader(r.Body, maxProxyBodySize+1)
+		reqBodyBytes, _ = io.ReadAll(limited)
+		if int64(len(reqBodyBytes)) > maxProxyBodySize {
+			respondError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Request body exceeds %d bytes", maxProxyBodySize))
+			return
+		}
 		r.Body = io.NopCloser(bytes.NewBuffer(reqBodyBytes))
 		json.Unmarshal(reqBodyBytes, &reqBody)
 	}
@@ -392,8 +409,12 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 			req.Host = target.TargetURL.Host
 		},
 		Transport: &http.Transport{
-			DialContext: (&net.Dialer{}).DialContext,
-			Proxy:       http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout: proxyDialTimeout,
+			}).DialContext,
+			TLSHandshakeTimeout:   proxyTLSHandshakeTimeout,
+			ResponseHeaderTimeout: proxyResponseHeaderTimeout,
+			Proxy:                 http.ProxyFromEnvironment,
 		},
 	}
 	if target.ResolvedIP != "" {
@@ -408,8 +429,13 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		proxy.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
+				return (&net.Dialer{
+					Timeout: proxyDialTimeout,
+				}).DialContext(ctx, network, net.JoinHostPort(pinnedIP, port))
 			},
+			TLSHandshakeTimeout:   proxyTLSHandshakeTimeout,
+			ResponseHeaderTimeout: proxyResponseHeaderTimeout,
+			TLSClientConfig:       &tls.Config{ServerName: target.TargetURL.Hostname()},
 		}
 	}
 
@@ -419,7 +445,8 @@ func (h *Handlers) ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		respStatusCode = resp.StatusCode
-		respBytes, err := io.ReadAll(resp.Body)
+		limited := io.LimitReader(resp.Body, maxProxyBodySize)
+		respBytes, err := io.ReadAll(limited)
 		if err != nil {
 			return err
 		}

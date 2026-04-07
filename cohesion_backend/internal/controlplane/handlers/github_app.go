@@ -9,6 +9,7 @@ import (
 
 	"github.com/cohesion-api/cohesion_backend/internal/auth"
 	"github.com/go-chi/chi/v5"
+	gh "github.com/google/go-github/v68/github"
 )
 
 func (h *Handlers) GitHubAppStatus(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +94,64 @@ func (h *Handlers) ListGitHubInstallations(w http.ResponseWriter, r *http.Reques
 	}
 
 	respondJSON(w, http.StatusOK, installations)
+}
+
+func (h *Handlers) ListGitHubRepos(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserID(r.Context())
+	if userID == "" {
+		respondError(w, http.StatusUnauthorized, "Not authenticated")
+		return
+	}
+
+	if !h.githubAppAuth.IsConfigured() {
+		respondJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	installations, err := h.ghInstallService.List(r.Context(), userID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to list installations")
+		return
+	}
+
+	type repoEntry struct {
+		FullName      string `json:"full_name"`
+		Owner         string `json:"owner"`
+		Name          string `json:"name"`
+		Private       bool   `json:"private"`
+		DefaultBranch string `json:"default_branch"`
+	}
+
+	var repos []repoEntry
+	for _, inst := range installations {
+		client, err := h.githubAppAuth.InstallationClient(inst.InstallationID)
+		if err != nil {
+			continue
+		}
+
+		opt := &gh.ListOptions{PerPage: 100}
+		for {
+			repoList, resp, err := client.Apps.ListRepos(r.Context(), opt)
+			if err != nil {
+				break
+			}
+			for _, repo := range repoList.Repositories {
+				repos = append(repos, repoEntry{
+					FullName:      repo.GetFullName(),
+					Owner:         repo.GetOwner().GetLogin(),
+					Name:          repo.GetName(),
+					Private:       repo.GetPrivate(),
+					DefaultBranch: repo.GetDefaultBranch(),
+				})
+			}
+			if resp.NextPage == 0 {
+				break
+			}
+			opt.Page = resp.NextPage
+		}
+	}
+
+	respondJSON(w, http.StatusOK, repos)
 }
 
 func (h *Handlers) RemoveGitHubInstallation(w http.ResponseWriter, r *http.Request) {

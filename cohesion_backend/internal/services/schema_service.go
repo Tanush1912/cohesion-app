@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	"github.com/cohesion-api/cohesion_backend/internal/models"
@@ -13,12 +14,14 @@ import (
 var pathParamRegex = regexp.MustCompile(`\{[^}]+\}`)
 
 type SchemaService struct {
+	db           *repository.DB
 	schemaRepo   *repository.SchemaRepository
 	endpointRepo *repository.EndpointRepository
 }
 
-func NewSchemaService(schemaRepo *repository.SchemaRepository, endpointRepo *repository.EndpointRepository) *SchemaService {
+func NewSchemaService(db *repository.DB, schemaRepo *repository.SchemaRepository, endpointRepo *repository.EndpointRepository) *SchemaService {
 	return &SchemaService{
+		db:           db,
 		schemaRepo:   schemaRepo,
 		endpointRepo: endpointRepo,
 	}
@@ -52,7 +55,13 @@ func (s *SchemaService) UploadSchemas(ctx context.Context, projectID uuid.UUID, 
 		}
 	}
 
-	if err := s.endpointRepo.UpsertBatch(ctx, uniqueEndpoints); err != nil {
+	tx, err := s.db.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := s.endpointRepo.UpsertBatchTx(ctx, tx, uniqueEndpoints); err != nil {
 		return err
 	}
 
@@ -77,7 +86,11 @@ func (s *SchemaService) UploadSchemas(ctx context.Context, projectID uuid.UUID, 
 		})
 	}
 
-	return s.schemaRepo.UpsertBatch(ctx, dbSchemas)
+	if err := s.schemaRepo.UpsertBatchTx(ctx, tx, dbSchemas); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (s *SchemaService) normalizePath(path string) string {

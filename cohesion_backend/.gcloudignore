@@ -1,0 +1,9 @@
+.env
+.env.*
+.git
+.gitignore
+bin/
+*.test
+*.out
+vendor/
+cohesion-server

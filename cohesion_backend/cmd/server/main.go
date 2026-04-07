@@ -12,6 +12,7 @@ import (
 
 	"github.com/cohesion-api/cohesion_backend/internal/config"
 	"github.com/cohesion-api/cohesion_backend/internal/controlplane"
+	"github.com/cohesion-api/cohesion_backend/internal/crypto"
 	"github.com/cohesion-api/cohesion_backend/internal/repository"
 	"github.com/cohesion-api/cohesion_backend/internal/services"
 	"github.com/cohesion-api/cohesion_backend/pkg/analyzer"
@@ -24,6 +25,12 @@ func main() {
 
 	if cfg.DatabaseURL == "" {
 		log.Fatal("DATABASE_URL is required")
+	}
+
+	if cfg.Environment == "production" {
+		if err := crypto.RequireKeyInProduction(); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -44,7 +51,7 @@ func main() {
 
 	projectService := services.NewProjectService(projectRepo, endpointRepo)
 	endpointService := services.NewEndpointService(endpointRepo, schemaRepo)
-	schemaService := services.NewSchemaService(schemaRepo, endpointRepo)
+	schemaService := services.NewSchemaService(db, schemaRepo, endpointRepo)
 	diffService := services.NewDiffService(diffRepo, schemaRepo, endpointRepo)
 	liveService := services.NewLiveService()
 	userSettingsService := services.NewUserSettingsService(userSettingsRepo)

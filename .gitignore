@@ -23,6 +23,9 @@ cohesion_backend/cohesion-server
 .env.*
 !.env.example
 
+# Private keys
+*.pem
+
 # Logs
 *.log
 npm-debug.log*
@@ -34,3 +37,4 @@ pnpm-debug.log*
 .DS_Store
 .vscode/
 .idea/
+.vercel
