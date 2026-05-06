@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/clerk/clerk-sdk-go/v2/signintoken"
+	clerkuser "github.com/clerk/clerk-sdk-go/v2/user"
 	"github.com/cohesion-api/cohesion_backend/internal/auth"
 	"github.com/cohesion-api/cohesion_backend/internal/models"
 	"github.com/cohesion-api/cohesion_backend/internal/repository"
@@ -76,6 +79,49 @@ func New(
 
 func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
+
+const (
+	demoEmail = "demo@cohesion.dev"
+	demoName  = "demo cohesion"
+)
+
+func (h *Handlers) DemoToken(w http.ResponseWriter, r *http.Request) {
+	userID, err := findDemoUser(r.Context())
+	if err != nil {
+		respondError(w, http.StatusNotFound, "Demo user not found")
+		return
+	}
+
+	token, err := signintoken.Create(r.Context(), &signintoken.CreateParams{
+		UserID: &userID,
+	})
+	if err != nil {
+		log.Printf("[demo] failed to create sign-in token: %v", err)
+		respondError(w, http.StatusInternalServerError, "Failed to create demo token")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"ticket": token.Token})
+}
+
+func findDemoUser(ctx context.Context) (string, error) {
+	list, err := clerkuser.List(ctx, &clerkuser.ListParams{
+		EmailAddresses: []string{demoEmail},
+	})
+	if err == nil && list != nil && len(list.Users) > 0 {
+		return list.Users[0].ID, nil
+	}
+
+	query := demoName
+	list, err = clerkuser.List(ctx, &clerkuser.ListParams{
+		Query: &query,
+	})
+	if err == nil && list != nil && len(list.Users) > 0 {
+		return list.Users[0].ID, nil
+	}
+
+	return "", fmt.Errorf("demo user not found")
 }
 
 type CreateProjectRequest struct {

@@ -1,7 +1,9 @@
 "use client";
 
+import { Suspense } from "react";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/sidebar";
+import { DemoAutoSignIn } from "@/components/auth/demo-auto-signin";
 import { Toaster } from "sonner";
 
 const AUTH_ROUTES = ["/sign-in", "/sign-up"];
@@ -11,11 +13,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const isAuthPage = AUTH_ROUTES.some((r) => pathname.startsWith(r));
 
     if (isAuthPage) {
-        return <>{children}</>;
+        return (
+            <>
+                <Suspense><DemoAutoSignIn /></Suspense>
+                {children}
+            </>
+        );
     }
 
     return (
         <>
+            <Suspense><DemoAutoSignIn /></Suspense>
             <div className="flex min-h-screen bg-[#0a0a0f]">
                 <Sidebar />
                 <main className="flex-1 overflow-auto">

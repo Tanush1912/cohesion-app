@@ -51,6 +51,7 @@ func NewRouter(svc *Services) http.Handler {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
+		r.Get("/demo/token", h.DemoToken)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware())
 			r.Use(svc.LiveService.SelfCaptureMiddleware(func(r *http.Request) string {
