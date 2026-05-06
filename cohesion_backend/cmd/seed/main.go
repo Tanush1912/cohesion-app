@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/clerk/clerk-sdk-go/v2"
+	clerkemail "github.com/clerk/clerk-sdk-go/v2/emailaddress"
 	clerkuser "github.com/clerk/clerk-sdk-go/v2/user"
 	"github.com/cohesion-api/cohesion_backend/internal/repository"
 	"github.com/google/uuid"
@@ -73,7 +74,7 @@ func ensureDemoUser(ctx context.Context) (string, error) {
 		return list.Users[0].ID, nil
 	}
 
-	// Fallback: search by name (for GitHub-only auth where user has no email)
+	// Find existing demo user by name and add email
 	query := demoName
 	list, err = clerkuser.List(ctx, &clerkuser.ListParams{
 		Query: &query,
@@ -82,15 +83,58 @@ func ensureDemoUser(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("list users by name: %w", err)
 	}
 	if list != nil && len(list.Users) > 0 {
-		return list.Users[0].ID, nil
+		userID := list.Users[0].ID
+		if err := ensureDemoEmail(ctx, userID); err != nil {
+			log.Printf("WARNING: could not add email to existing user: %v", err)
+			log.Println("Trying to create a fresh demo user with email instead...")
+		} else {
+			return userID, nil
+		}
 	}
 
-	// If DEMO_USER_ID is provided directly, use that
-	if id := os.Getenv("DEMO_USER_ID"); id != "" {
-		return id, nil
+	// Create a new user with email
+	email := demoEmail
+	firstName := "Demo"
+	lastName := "User"
+	skipPwd := true
+	u, err := clerkuser.Create(ctx, &clerkuser.CreateParams{
+		EmailAddresses:          &[]string{email},
+		FirstName:               &firstName,
+		LastName:                &lastName,
+		SkipPasswordRequirement: &skipPwd,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create demo user: %w", err)
+	}
+	log.Printf("Created demo user %s with email %s", u.ID, demoEmail)
+	return u.ID, nil
+}
+
+func ensureDemoEmail(ctx context.Context, userID string) error {
+	u, err := clerkuser.Get(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, ea := range u.EmailAddresses {
+		if ea.EmailAddress == demoEmail {
+			return nil
+		}
 	}
 
-	return "", fmt.Errorf("demo user not found — create a user named %q in the Clerk dashboard, or set DEMO_USER_ID", demoName)
+	email := demoEmail
+	verified := true
+	primary := true
+	_, err = clerkemail.Create(ctx, &clerkemail.CreateParams{
+		UserID:       &userID,
+		EmailAddress: &email,
+		Verified:     &verified,
+		Primary:      &primary,
+	})
+	if err != nil {
+		return fmt.Errorf("create email: %w", err)
+	}
+	log.Printf("Added email %s to demo user %s", demoEmail, userID)
+	return nil
 }
 
 func ensureDemoProject(ctx context.Context, db *repository.DB, ownerID string) (uuid.UUID, error) {
