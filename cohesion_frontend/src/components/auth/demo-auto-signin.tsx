@@ -12,7 +12,8 @@ export function DemoAutoSignIn() {
     const searchParams = useSearchParams();
     const attempted = useRef(false);
 
-    const isDemo = searchParams.get("demo") === "true";
+    const isDemo = searchParams.get("demo") === "true" ||
+        searchParams.get("redirect_url")?.includes("demo=true") === true;
 
     useEffect(() => {
         if (!isDemo || !signInLoaded || !authLoaded || attempted.current) return;
