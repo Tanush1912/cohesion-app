@@ -12,7 +12,9 @@ export function DemoAutoSignIn() {
     const searchParams = useSearchParams();
     const attempted = useRef(false);
 
-    const isDemo = searchParams.get("demo") === "true" ||
+    const directTicket = searchParams.get("ticket");
+    const isDemo = directTicket ||
+        searchParams.get("demo") === "true" ||
         searchParams.get("redirect_url")?.includes("demo=true") === true;
 
     useEffect(() => {
@@ -21,6 +23,7 @@ export function DemoAutoSignIn() {
         if (isSignedIn) {
             const url = new URL(window.location.href);
             url.searchParams.delete("demo");
+            url.searchParams.delete("ticket");
             window.location.replace(url.pathname + url.search || "/");
             return;
         }
@@ -29,27 +32,30 @@ export function DemoAutoSignIn() {
 
         (async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/demo/token`);
-                if (!res.ok) throw new Error("Failed to get demo token");
-                const { ticket } = await res.json();
+                let ticket = directTicket;
+
+                if (!ticket) {
+                    const res = await fetch(`${API_BASE}/api/demo/token`);
+                    if (!res.ok) throw new Error("Failed to get demo token");
+                    const data = await res.json();
+                    ticket = data.ticket;
+                }
 
                 const result = await signIn!.create({
                     strategy: "ticket",
-                    ticket,
+                    ticket: ticket!,
                 });
 
                 if (result.status === "complete" && result.createdSessionId) {
                     await setActive!({ session: result.createdSessionId });
-                    const url = new URL(window.location.href);
-                    url.searchParams.delete("demo");
-                    window.location.replace(url.pathname || "/");
+                    window.location.replace("/");
                 }
             } catch (err) {
                 console.error("[demo] auto sign-in failed:", err);
                 attempted.current = false;
             }
         })();
-    }, [isDemo, signInLoaded, authLoaded, isSignedIn, signIn, setActive]);
+    }, [isDemo, directTicket, signInLoaded, authLoaded, isSignedIn, signIn, setActive]);
 
     if (!isDemo) return null;
 
