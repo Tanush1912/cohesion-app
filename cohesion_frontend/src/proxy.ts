@@ -6,9 +6,15 @@ const isPublicRoute = createRouteMatcher([
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
-    if (!isPublicRoute(request)) {
-        await auth.protect();
+    const url = new URL(request.url);
+    const hasTicket = url.searchParams.has("ticket");
+    const hasDemo = url.searchParams.get("demo") === "true";
+
+    if (isPublicRoute(request) || hasTicket || hasDemo) {
+        return;
     }
+
+    await auth.protect();
 });
 
 export const config = {
